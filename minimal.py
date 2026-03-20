@@ -1,88 +1,83 @@
 import json, os, sys
 from pathlib import Path
 
-ARC_IDS = "1cf80156 67a3c6ac 68b16354 74dd1130 9dfd6313 28bf18c6 4c4377d9 6d0aefbc 6fa7a44f 7468f01a".split()
+# 4 pillars: feedback=evaluate, approximability=accuracy, abstraction=library, exploration=expand.
 
-def flip_h(g): return [r[::-1] for r in g]
-def flip_v(g): return g[::-1]
-def transpose(g): return [list(r) for r in zip(*g)]
-def crop_support(g):
-    pts = [(i, j) for i, row in enumerate(g) for j, v in enumerate(row) if v]
-    if not pts: return [[0]]
-    rows, cols = zip(*pts)
-    return [row[min(cols):max(cols)+1] for row in g[min(rows):max(rows)+1]]
+def crop_support(grid):
+    cells = [(i, j) for i, row in enumerate(grid) for j, value in enumerate(row) if value]
+    if not cells: return [[0]]
+    rows, cols = zip(*cells)
+    return [row[min(cols):max(cols) + 1] for row in grid[min(rows):max(rows) + 1]]
 
-SEEDS = {"identity": lambda g: g, "flip_h": flip_h, "flip_v": flip_v, "transpose": transpose, "crop_support": crop_support}
-COMPOSE = {
-    "overlay": lambda a, b: [[y or x for x, y in zip(r, s)] for r, s in zip(a, b)],
-    "hcat": lambda a, b: [r + s for r, s in zip(a, b)],
-    "vcat": lambda a, b: a + b,
+PRIMITIVES = {
+    "identity": lambda g: g,
+    "flip_h": lambda g: [row[::-1] for row in g],
+    "flip_v": lambda g: g[::-1],
+    "transpose": lambda g: [list(row) for row in zip(*g)],
+    "crop_support": crop_support,
 }
 
-def run(p, g):
-    if isinstance(p, str): return SEEDS[p](g)
-    op, a, b = p
-    return run(b, run(a, g)) if op == "chain" else COMPOSE[op](run(a, g), run(b, g))
+def run(program, grid):
+    for name in program: grid = PRIMITIVES[name](grid)
+    return grid
 
-def show(p): return p if isinstance(p, str) else f"({p[0]} {show(p[1])} {show(p[2])})"
-def subs(p): return [] if isinstance(p, str) else [p, *subs(p[1]), *subs(p[2])]
-def size(p): return 1 if isinstance(p, str) else 1 + size(p[1]) + size(p[2])
-def acc(a, b):
-    if len(a) != len(b) or len(a[0]) != len(b[0]): return 0.0
-    return sum(x == y for r, s in zip(a, b) for x, y in zip(r, s)) / sum(len(r) for r in b)
-def score(p, task):
-    pairs = [(run(p, ex["input"]), ex["output"]) for ex in task["train"] + task["test"]]
-    return all(a == b for a, b in pairs), sum(acc(a, b) for a, b in pairs) / len(pairs), size(p)
+def accuracy(predicted, expected):
+    if len(predicted) != len(expected) or len(predicted[0]) != len(expected[0]): return 0.0
+    total = sum(len(row) for row in expected)
+    return sum(a == b for row_a, row_b in zip(predicted, expected) for a, b in zip(row_a, row_b)) / total
 
-def make_task(inp, prog):
-    test = flip_h(inp)
-    return {"train": [{"input": inp, "output": run(prog, inp)}], "test": [{"input": test, "output": run(prog, test)}]}
+def evaluate(program, task):
+    scores = [accuracy(run(program, ex["input"]), ex["output"]) for ex in task["train"]]
+    return all(score == 1 for score in scores), sum(scores) / len(scores), -len(program)
 
-def synthetic():
-    specs = {
-        "s1": ([[1, 0], [0, 0]], "flip_h"),
-        "s2": ([[0, 2, 0], [0, 0, 0]], "flip_v"),
-        "s3": ([[0, 0, 3], [0, 0, 0]], "transpose"),
-        "s4": ([[0, 1, 0], [0, 2, 3], [0, 0, 0]], ("chain", "crop_support", "flip_h")),
-        "s5": ([[0, 4, 0], [0, 0, 0]], ("vcat", "flip_v", "crop_support")),
-        "s6": ([[0, 0, 5], [0, 0, 0]], ("hcat", "crop_support", "flip_h")),
+def explore(library, round_number):
+    base = [(name,) for name in PRIMITIVES]
+    if round_number == 1: return base
+    seen = set(base)
+    for learned in library:
+        for seed in base:
+            seen.add(seed + learned)
+            seen.add(learned + seed)
+    return sorted(seen, key=lambda program: (len(program), program))
+
+def best_program(task, candidates):
+    return min(candidates, key=lambda program: (-evaluate(program, task)[0], -evaluate(program, task)[1], len(program), program))
+
+def learn(name, tasks, rounds=2):
+    library, seen = [], set()
+    for round_number in range(1, rounds + 1):
+        solved = {task_id: best_program(task, explore(library, round_number)) for task_id, task in tasks.items()}
+        winners = {task_id: program for task_id, program in solved.items() if evaluate(program, tasks[task_id])[0]}
+        new = sorted(task_id for task_id in winners if task_id not in seen)
+        seen.update(winners)
+        for task_id in new:
+            program = winners[task_id]
+            if program not in library: library.append(program)
+        print(f"{name} round {round_number}: {len(winners)}/{len(tasks)} solved")
+        print("new:", new)
+        print("library:", [" -> ".join(program) for program in library])
+
+def make_task(grid, program):
+    return {"train": [{"input": grid, "output": run(program, grid)}]}
+
+def synthetic_tasks():
+    return {
+        "flip_h": make_task([[1, 0], [0, 0]], ("flip_h",)),
+        "transpose": make_task([[0, 0, 2], [0, 0, 0]], ("transpose",)),
+        "crop_then_flip": make_task([[0, 1, 0], [0, 2, 3], [0, 0, 0]], ("crop_support", "flip_h")),
+        "flip_then_transpose": make_task([[1, 0], [2, 0], [0, 0]], ("flip_h", "transpose")),
     }
-    return {k: make_task(inp, prog) for k, (inp, prog) in specs.items()}
 
-def arc_dir():
+def arc_tasks(limit=10):
     here = Path(__file__).resolve().parent
     checked = [os.getenv("ARC_AGI_1_TRAIN_DIR"), here / "data/ARC-AGI/data/training", here / "../agi-core/data/ARC-AGI/data/training"]
-    found = next((Path(p) for p in checked if p and Path(p).is_dir()), None)
-    if found: return found
-    print("missing ARC dataset; checked:"); [print(f"- {p or '(unset) ARC_AGI_1_TRAIN_DIR'}") for p in checked]; raise SystemExit(1)
-
-def arc(): 
-    root = arc_dir()
-    return {task_id: json.loads((root / f"{task_id}.json").read_text()) for task_id in ARC_IDS}
-
-def round2(lib):
-    pool = list(SEEDS) + lib
-    return list(SEEDS) + [(op, a, b) for op in ("chain", "overlay", "hcat", "vcat") for a in pool for b in pool if a in lib or b in lib]
-
-def promote(lib, programs):
-    seen = {show(p) for p in lib}
-    for p in programs:
-        for q in [p, *subs(p)]:
-            if isinstance(q, str) and q != p: continue
-            if show(q) not in seen: lib.append(q); seen.add(show(q))
-
-def solve(name, tasks):
-    lib, solved = [], set()
-    for r in (1, 2):
-        winners, cand = {}, list(SEEDS) if r == 1 else round2(lib)
-        for task_id, task in tasks.items():
-            ranked = sorted(((score(p, task), show(p), p) for p in cand), key=lambda x: (-x[0][0], -x[0][1], x[0][2], x[1]))
-            if ranked[0][0][0]: winners[task_id] = ranked[0][2]
-        new = sorted(task_id for task_id in winners if task_id not in solved)
-        solved |= set(new); promote(lib, [winners[k] for k in new])
-        print(f"{name} round {r}: {len(solved)}/{len(tasks)} new={new} lib={[show(p) for p in lib]}")
+    root = next((Path(path) for path in checked if path and Path(path).is_dir()), None)
+    if not root:
+        print("missing ARC dataset; checked:"); [print(f"- {path or '(unset) ARC_AGI_1_TRAIN_DIR'}") for path in checked]; raise SystemExit(1)
+    files = sorted(root.glob("*.json"))[:limit]
+    return {file.stem: json.loads(file.read_text()) for file in files}
 
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "both"
-    if mode in ("synthetic", "both"): solve("synthetic", synthetic())
-    if mode in ("arc", "both"): solve("arc", arc())
+    if mode in ("synthetic", "both"): learn("synthetic", synthetic_tasks())
+    if mode in ("arc", "both"): learn("arc", arc_tasks())
