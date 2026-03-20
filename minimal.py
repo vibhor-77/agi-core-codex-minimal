@@ -173,7 +173,17 @@ def keep_alive(alive, cap):
         covered |= best["covers"] | best["helps"]
     return chosen
 
-def evolve(library, improved, inputs, cap=12):
+def overlaps(library):
+    names, pairs = list(library), []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            sa = library[a]["covers"] | library[a]["helps"]
+            sb = library[b]["covers"] | library[b]["helps"]
+            inter, union = len(sa & sb), len(sa | sb)
+            if inter: pairs.append((inter / union, inter, a, b))
+    return [f"{a} ~ {b} j{j:.2f} n{n}" for j, n, a, b in sorted(pairs, reverse=True)[:3]]
+
+def evolve(library, improved, samples, cap=12):
     for entry in library.values():
         entry["age"] += 1
         entry["used"] = False
@@ -195,12 +205,12 @@ def evolve(library, improved, inputs, cap=12):
                 library[name]["reuse"] += 1
                 library[name]["used"] = True
                 library[name]["age"] = 0
-    base_sigs = {signature(name, inputs) for name in PRIMS}
-    seen = base_sigs | {signature(entry["program"], inputs) for entry in library.values()}
+    base_sigs = {signature(name, samples) for name in PRIMS}
+    seen = base_sigs | {signature(entry["program"], samples) for entry in library.values()}
     ranked = sorted(gains.values(), key=lambda item: (-item["support"], -item["gain"], size(item["program"]), show(item["program"])))
     new, primitive_equivalent_rejections = [], 0
     for item in ranked:
-        name, sig = show(item["program"]), signature(item["program"], inputs)
+        name, sig = show(item["program"]), signature(item["program"], samples)
         if sig in base_sigs:
             primitive_equivalent_rejections += 1
             continue
@@ -296,12 +306,15 @@ def learn(label, tasks, eval_tasks=None, rounds=3, keep=4, library=None, freeze=
         avg_coverage = sum(len(entry["covers"]) for entry in library.values()) / len(library) if library else 0.0
         avg_critical = sum(entry["critical"] for entry in library.values()) / len(library) if library else 0.0
         avg_impact = sum(entry["impact"] for entry in library.values()) / len(library) if library else 0.0
+        union_cover = len(set().union(*[entry["covers"] for entry in library.values()])) if library else 0
+        union_help = len(set().union(*[entry["helps"] for entry in library.values()])) if library else 0
         depths = [entry["depth"] for entry in library.values()]
         ablation_breaks, ablation_gap = ablate(tasks, fronts)
         fresh_programs = {task_id: show(fronts[task_id][0][1]) for task_id in fresh[:6]}
         critical_tasks = [task_id for task_id in solved if winner_drops.get(task_id, 0) > 0]
         critical_programs = {task_id: show(fronts[task_id][0][1]) for task_id in critical_tasks[:6]}
         top_population = [f"{name} u{len(entry['covers'])} h{len(entry['helps'])} c{entry['critical']} i{entry['impact']:.2f}" for name, entry in sorted(library.items(), key=lambda item: (-(len(item[1]["covers"]) + len(item[1]["helps"])), -len(item[1]["covers"]), -item[1]["critical"], -item[1]["impact"], -item[1]["reuse"], show(item[1]["program"])))[:5]]
+        top_overlaps = overlaps(library)
         print(f"{label} round {r}: {len(solved)}/{len(tasks)} solved, mean train {mean:.3f}, pool {len(pool)}")
         print("newly solved:", fresh[:12], "..." if len(fresh) > 12 else "")
         print("fresh programs:", fresh_programs)
@@ -310,8 +323,9 @@ def learn(label, tasks, eval_tasks=None, rounds=3, keep=4, library=None, freeze=
         print("critical solves:", critical_tasks[:12], "..." if len(critical_tasks) > 12 else "")
         print("critical programs:", critical_programs)
         print("top candidates:", [f"{show(item['program'])} s{item['support']} g{item['gain']:.2f}" for item in top])
-        print(f"metrics: library_solves={solve_reuse} critical_library_solves={critical_solves} avg_library_delta={sum(gain_reuse) / len(gain_reuse) if gain_reuse else 0:.3f} avg_counterfactual_drop={sum(winner_drops.values()) / len(winner_drops) if winner_drops else 0:.3f} survivors={survivors} avg_reuse={avg_reuse:.2f} avg_coverage={avg_coverage:.2f} avg_help={avg_help:.2f} avg_critical={avg_critical:.2f} avg_impact={avg_impact:.3f} pool_per_solve={len(pool) / max(1, len(solved)):.1f} lineage_depth_max={max(depths, default=0)} lineage_depth_avg={(sum(depths) / len(depths)) if depths else 0:.2f} new_population_count={len(new)} primitive_equivalent_rejections={primitive_equivalent_rejections} ablation_breaks={ablation_breaks} ablation_gap={ablation_gap:.3f}")
+        print(f"metrics: library_solves={solve_reuse} critical_library_solves={critical_solves} avg_library_delta={sum(gain_reuse) / len(gain_reuse) if gain_reuse else 0:.3f} avg_counterfactual_drop={sum(winner_drops.values()) / len(winner_drops) if winner_drops else 0:.3f} survivors={survivors} avg_reuse={avg_reuse:.2f} avg_coverage={avg_coverage:.2f} avg_help={avg_help:.2f} union_coverage={union_cover} union_help={union_help} avg_critical={avg_critical:.2f} avg_impact={avg_impact:.3f} pool_per_solve={len(pool) / max(1, len(solved)):.1f} lineage_depth_max={max(depths, default=0)} lineage_depth_avg={(sum(depths) / len(depths)) if depths else 0:.2f} new_population_count={len(new)} primitive_equivalent_rejections={primitive_equivalent_rejections} ablation_breaks={ablation_breaks} ablation_gap={ablation_gap:.3f}")
         print("top population:", top_population)
+        print("top overlaps:", top_overlaps)
         print("population:", [name for name in library])
         if eval_tasks and r in {1, rounds}: evaluate(f"public eval after round {r}", eval_tasks, library)
     return library
