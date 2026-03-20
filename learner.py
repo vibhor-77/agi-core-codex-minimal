@@ -60,25 +60,42 @@ def sample_inputs(tasks: dict[str, Task], limit: int = 8) -> list[Grid]:
 
 def enumerate_programs(library: Library, fronts: Frontier, max_cost: int = 7) -> list[Program]:
     learned = set(library)
-    frontier_programs = unique([program for items in fronts.values() for _, program in items])
-    grid_base = unique(seed_programs("grid") + [entry.program for entry in library.values() if entry.kind == "grid"] + frontier_programs)[:8]
-    mask_base = unique(seed_programs("mask") + [entry.program for entry in library.values() if entry.kind == "mask"])[:4]
+    grid_prims = seed_programs("grid")
+    mask_prims = seed_programs("mask")
+    frontier_programs = unique([items[0][1] for items in fronts.values() if items])
 
-    grid_pipes = [
-        Pipe(left, right)
-        for left in grid_base + mask_base
-        for right in grid_base
-        if input_kind(left) == "grid" and output_kind(left) == input_kind(right) and output_kind(right) == "grid"
+    learned_transforms = unique(
+        [entry.program for entry in library.values() if entry.kind == "grid"]
+        + [program for program in frontier_programs if output_kind(program) == "grid"]
+    )
+    learned_transforms = sorted(learned_transforms, key=lambda program: (-cost(program), render(program)))
+    transforms = unique(learned_transforms + grid_prims)[:10]
+    selectors = unique(
+        [entry.program for entry in library.values() if entry.kind == "mask"]
+        + [program for program in frontier_programs if output_kind(program) == "mask"]
+        + mask_prims
+    )[:6]
+
+    transform_extensions = [
+        Pipe(base, primitive)
+        for base in learned_transforms
+        for primitive in grid_prims
+        if output_kind(base) == input_kind(primitive)
+    ] + [
+        Pipe(primitive, base)
+        for primitive in grid_prims
+        for base in learned_transforms
+        if output_kind(primitive) == input_kind(base)
     ]
-    mask_pipes = [
-        Pipe(left, right)
-        for left in grid_base + mask_base
-        for right in mask_base
-        if input_kind(left) == "grid" and output_kind(left) == input_kind(right) and output_kind(right) == "mask"
+    selector_extensions = [
+        Pipe(base, primitive)
+        for base in learned_transforms + grid_prims
+        for primitive in mask_prims
+        if output_kind(base) == input_kind(primitive)
     ]
 
-    transforms = unique(grid_base + grid_pipes)[:12]
-    selectors = unique(mask_base + mask_pipes)[:6]
+    transforms = unique(transforms + transform_extensions)[:18]
+    selectors = unique(selectors + selector_extensions)[:8]
     focuses = [Focus(selector, transform) for selector in selectors for transform in transforms if render(transform) != "identity"]
     pool = unique(transforms + focuses)
     return [program for program in pool if cost(program, learned) <= max_cost]
@@ -109,20 +126,22 @@ def promote(library: Library, improved: dict[str, list[tuple[float, Program]]], 
     candidates: dict[str, Abstraction] = {}
 
     for task_id, updates in improved.items():
-        for delta, winner in updates:
-            for subtree in walk(winner):
-                if isinstance(subtree, PrimRef):
-                    continue
-                name = render(subtree)
-                item = candidates.setdefault(name, Abstraction(program=subtree, kind=output_kind(subtree)))
-                item.support += 1
-                item.gain += delta
-                if delta == 1.0:
-                    item.solved.add(task_id)
+        delta, winner = updates[0]
+        if delta <= 0:
+            continue
+        for subtree in walk(winner):
+            if isinstance(subtree, PrimRef):
+                continue
+            name = render(subtree)
+            item = candidates.setdefault(name, Abstraction(program=subtree, kind=output_kind(subtree)))
+            item.support += 1
+            item.gain += delta
+            if delta == 1.0:
+                item.solved.add(task_id)
 
     added: list[str] = []
     for name, item in sorted(candidates.items(), key=lambda kv: (-kv[1].support, -kv[1].gain, kv[0])):
-        if item.support < 2 or item.gain / item.support < 0.5:
+        if item.support < 2 or item.gain / item.support < 0.75:
             continue
         sig = signature(item.program, sample_grids)
         if sig in seen or name in library:

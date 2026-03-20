@@ -31,7 +31,15 @@ ARC expects JSON task files in:
 - `../agi-core/data/ARC-AGI/data/training`
 
 ## Current Readout
-- This reset is cleaner and simpler than the previous version, but weaker.
-- Synthetic currently learns the first useful abstraction, `focus(nonzero, reverse_cols)`, but does not yet compound through the later stages.
-- ARC currently reaches `7/400` exact on train and `0/400` exact on public eval, with mean public-eval score about `0.519`.
-- The point of the current code is clarity of the typed substrate and learning loop, not benchmark performance yet.
+- The code is now centered on a small typed substrate and a deterministic local-extension search.
+- Synthetic compounds through the full staged curriculum:
+  - stage 1 learns `focus(nonzero, reverse_cols)`
+  - stage 2 learns branch abstractions by extending it with one primitive
+  - stage 3 and stage 4 continue by extending the deepest learned abstractions first
+  - the frozen choice probe solves `4/4`
+- ARC is still only a transfer probe:
+  - round 1: `5/400` exact on train
+  - round 2: `7/400` exact on train
+  - round 3: `7/400` exact on train
+  - public eval: `0/400` exact, mean test about `0.487`
+- The current value is not benchmark strength; it is that the same small mechanism now demonstrates clean staged compounding on synthetic tasks and nontrivial reuse on ARC without any ARC-specific tactics.
