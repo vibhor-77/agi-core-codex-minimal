@@ -232,7 +232,7 @@ def ablate(tasks, fronts):
         gap += best - base
     return int(breaks), gap / len(tasks)
 
-def learn(label, tasks, eval_tasks=None, rounds=3, keep=4, library=None):
+def learn(label, tasks, eval_tasks=None, rounds=3, keep=4, library=None, freeze=False):
     library, fronts, inputs, solved_before = ({} if library is None else dict(library)), {}, sample_inputs(tasks), set()
     for r in range(1, rounds + 1):
         prior = set(library)
@@ -243,12 +243,15 @@ def learn(label, tasks, eval_tasks=None, rounds=3, keep=4, library=None):
             fronts[task_id] = frontier(task, pool, keep, [p for _, p in fronts.get(task_id, [])])
             better = [(quality - before, program) for quality, program in fronts[task_id] if quality > before]
             if better: improved[task_id] = better
-        library, new, top, primitive_equivalent_rejections = evolve(library, improved, inputs)
+        if freeze:
+            new, top, primitive_equivalent_rejections = [], [], 0
+        else:
+            library, new, top, primitive_equivalent_rejections = evolve(library, improved, inputs)
         solved = sorted(task_id for task_id, items in fronts.items() if items[0][0] == 1.0)
         fresh = sorted(set(solved) - solved_before)
         solved_before = set(solved)
         mean = sum(items[0][0] for items in fronts.values()) / len(tasks)
-        reused = sorted(name for name, entry in library.items() if entry["used"])
+        reused = sorted(name for name in prior if any(any(size(t) > 1 and show(t) == name for t in pieces(items[0][1])) for items in fronts.values()))
         solve_reuse = sum(uses_library(fronts[task_id][0][1], prior) for task_id in solved)
         gain_reuse = [delta for items in improved.values() for delta, program in items if uses_library(program, prior)]
         winner_drops = {task_id: causal_drop(tasks[task_id], fronts[task_id][0][1], prior) for task_id in tasks if prior and uses_library(fronts[task_id][0][1], prior)}
@@ -297,10 +300,23 @@ def synthetic_stages():
         }),
     ]
 
+def synthetic_choice():
+    pair = ("local", "nonzero_mask", "flip_h")
+    triple = ("chain", pair, "transpose")
+    quad = ("chain", triple, "flip_h")
+    quint = ("local", "nonzero_mask", quad)
+    return {
+        "choice_quad_1": task([[0, 3, 2], [0, 0, 2], [0, 0, 0]], quad),
+        "choice_quad_2": task([[0, 1, 1], [0, 1, 3]], quad),
+        "choice_quint_1": task([[1, 3, 3, 1], [2, 1, 1, 3], [3, 2, 1, 2]], quint),
+        "choice_quint_2": task([[2, 3, 1, 0], [2, 3, 1, 2]], quint),
+    }
+
 def synthetic():
     library = {}
     for stage, tasks in synthetic_stages():
         library = learn(f"synthetic {stage}", tasks, rounds=1, library=library)
+    learn("synthetic choice", synthetic_choice(), rounds=1, library=library, freeze=True)
 
 def arc_root():
     here = Path(__file__).resolve().parent
