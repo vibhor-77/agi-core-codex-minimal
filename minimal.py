@@ -300,9 +300,12 @@ def task(grid, program):
 
 def synthetic_stages():
     pair = ("local", "nonzero_mask", "flip_h")
-    triple = ("chain", pair, "transpose")
-    quad = ("chain", triple, "flip_h")
-    quint = ("local", "nonzero_mask", quad)
+    triple_t = ("chain", pair, "transpose")
+    triple_v = ("chain", "flip_v", pair)
+    quad_t = ("local", "nonzero_mask", triple_t)
+    quad_v = ("chain", triple_v, "transpose")
+    quint_t = ("chain", quad_t, "transpose")
+    quint_v = ("chain", quad_v, "flip_v")
     return [
         ("stage_1", {
             "flip_h": task([[1, 0], [0, 0]], "flip_h"),
@@ -311,29 +314,38 @@ def synthetic_stages():
             "pair_2": task([[0, 4, 5], [0, 6, 0]], pair),
         }),
         ("stage_2", {
-            "triple_1": task([[1, 2, 0], [3, 0, 0]], triple),
-            "triple_2": task([[0, 4, 5], [0, 6, 0]], triple),
+            "triple_t_1": task([[1, 2, 0], [3, 0, 0]], triple_t),
+            "triple_t_2": task([[0, 4, 5], [0, 6, 0]], triple_t),
+            "triple_v_1": task([[0, 2, 3], [0, 2, 2], [0, 2, 1]], triple_v),
+            "triple_v_2": task([[1, 1, 0], [1, 0, 0], [2, 2, 0]], triple_v),
         }),
         ("stage_3", {
-            "quad_1": task([[3, 0, 2, 3], [3, 2, 3, 2]], quad),
-            "quad_2": task([[3, 0, 0], [2, 3, 0], [2, 2, 0]], quad),
+            "quad_t_1": task([[3, 0, 2, 3], [3, 2, 3, 2]], quad_t),
+            "quad_t_2": task([[2, 3, 0], [0, 0, 0], [1, 1, 0]], quad_t),
+            "quad_v_1": task([[3, 0, 0], [2, 3, 0], [2, 2, 0]], quad_v),
+            "quad_v_2": task([[0, 3, 0], [0, 3, 1], [0, 3, 3]], quad_v),
         }),
         ("stage_4", {
-            "quint_1": task([[1, 3, 3, 1], [2, 1, 1, 3], [3, 2, 1, 2]], quint),
-            "quint_2": task([[2, 3, 1, 0], [2, 3, 1, 2]], quint),
+            "quint_t_1": task([[3, 0, 2, 3], [3, 2, 3, 2]], quint_t),
+            "quint_t_2": task([[1, 2, 0], [3, 4, 0], [5, 0, 0]], quint_t),
+            "quint_v_1": task([[2, 3, 0], [0, 0, 0], [1, 1, 0]], quint_v),
+            "quint_v_2": task([[0, 2, 0], [3, 1, 0], [3, 3, 0]], quint_v),
         }),
     ]
 
 def synthetic_choice():
     pair = ("local", "nonzero_mask", "flip_h")
-    triple = ("chain", pair, "transpose")
-    quad = ("chain", triple, "flip_h")
-    quint = ("local", "nonzero_mask", quad)
+    triple_t = ("chain", pair, "transpose")
+    triple_v = ("chain", "flip_v", pair)
+    quad_t = ("local", "nonzero_mask", triple_t)
+    quad_v = ("chain", triple_v, "transpose")
+    quint_t = ("chain", quad_t, "transpose")
+    quint_v = ("chain", quad_v, "flip_v")
     return {
-        "choice_quad_1": task([[0, 3, 2], [0, 0, 2], [0, 0, 0]], quad),
-        "choice_quad_2": task([[0, 1, 1], [0, 1, 3]], quad),
-        "choice_quint_1": task([[1, 3, 3, 1], [2, 1, 1, 3], [3, 2, 1, 2]], quint),
-        "choice_quint_2": task([[2, 3, 1, 0], [2, 3, 1, 2]], quint),
+        "choice_quad_t": task([[1, 2, 0], [3, 4, 0], [5, 0, 0]], quad_t),
+        "choice_quad_v": task([[0, 3, 0], [0, 3, 1], [0, 3, 3]], quad_v),
+        "choice_quint_t": task([[3, 0, 2, 3], [3, 2, 3, 2]], quint_t),
+        "choice_quint_v": task([[2, 3, 0], [0, 0, 0], [1, 1, 0]], quint_v),
     }
 
 def synthetic():
