@@ -149,12 +149,16 @@ def causal_drop(task, program, names):
 
 def critical_names(task, program, names):
     if not uses_library(program, names): return {}
-    base, out = score(program, task["train"]), {}
-    for name in names:
-        alts = unique([replace(program, path, "identity") for path, node in nodes(program) if size(node) > 1 and show(node) == name])
-        if not alts: continue
-        drop = max(0.0, base - max([score(p, task["train"]) for p in alts] or [0.0]))
-        if drop > 0: out[name] = drop
+    base, hits = score(program, task["train"]), []
+    for path, node in nodes(program):
+        name = show(node)
+        if size(node) <= 1 or name not in names: continue
+        drop = max(0.0, base - score(replace(program, path, "identity"), task["train"]))
+        if drop > 0: hits.append((path, name, drop))
+    outer = [(path, name, drop) for path, name, drop in hits if not any(path[:len(other)] == other and other != path for other, _, _ in hits)]
+    out = {}
+    for _, name, drop in outer:
+        out[name] = max(out.get(name, 0.0), drop)
     return out
 
 def depth_of(program, library):
@@ -183,6 +187,21 @@ def overlaps(library):
             inter, union = len(sa & sb), len(sa | sb)
             if inter: pairs.append((inter / union, inter, a, b))
     return [f"{a} ~ {b} j{j:.2f} n{n}" for j, n, a, b in sorted(pairs, reverse=True)[:3]]
+
+def niches(library):
+    top = sorted(library.items(), key=lambda item: (-(len(item[1]["covers"]) + len(item[1]["helps"])), -len(item[1]["covers"]), -item[1]["critical"], -item[1]["impact"], show(item[1]["program"])))[:3]
+    return [f"{name}: covers={sorted(entry['covers'])[:6]} helps={sorted(entry['helps'])[:6]}" for name, entry in top]
+
+def overlap_tasks(library):
+    names, rows = list(library), []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            sa = library[a]["covers"] | library[a]["helps"]
+            sb = library[b]["covers"] | library[b]["helps"]
+            shared = sorted(sa & sb)
+            if shared:
+                rows.append((len(shared), a, b, shared[:6], sorted(sa - sb)[:4], sorted(sb - sa)[:4]))
+    return [f"{a} & {b}: shared={shared} only_a={only_a} only_b={only_b}" for _, a, b, shared, only_a, only_b in sorted(rows, reverse=True)[:2]]
 
 def evolve(library, improved, samples, cap=12):
     for entry in library.values():
@@ -316,6 +335,8 @@ def learn(label, tasks, eval_tasks=None, rounds=3, keep=4, library=None, freeze=
         critical_programs = {task_id: show(fronts[task_id][0][1]) for task_id in critical_tasks[:6]}
         top_population = [f"{name} u{len(entry['covers'])} h{len(entry['helps'])} c{entry['critical']} i{entry['impact']:.2f}" for name, entry in sorted(library.items(), key=lambda item: (-(len(item[1]["covers"]) + len(item[1]["helps"])), -len(item[1]["covers"]), -item[1]["critical"], -item[1]["impact"], -item[1]["reuse"], show(item[1]["program"])))[:5]]
         top_overlaps = overlaps(library)
+        top_niches = niches(library)
+        overlap_examples = overlap_tasks(library)
         print(f"{label} round {r}: {len(solved)}/{len(tasks)} solved, mean train {mean:.3f}, pool {len(pool)}")
         print("newly solved:", fresh[:12], "..." if len(fresh) > 12 else "")
         print("fresh programs:", fresh_programs)
@@ -327,6 +348,8 @@ def learn(label, tasks, eval_tasks=None, rounds=3, keep=4, library=None, freeze=
         print(f"metrics: library_solves={solve_reuse} critical_library_solves={critical_solves} avg_library_delta={sum(gain_reuse) / len(gain_reuse) if gain_reuse else 0:.3f} avg_counterfactual_drop={sum(winner_drops.values()) / len(winner_drops) if winner_drops else 0:.3f} survivors={survivors} avg_reuse={avg_reuse:.2f} avg_coverage={avg_coverage:.2f} avg_help={avg_help:.2f} union_coverage={union_cover} union_help={union_help} avg_critical={avg_critical:.2f} avg_impact={avg_impact:.3f} pool_per_solve={len(pool) / max(1, len(solved)):.1f} lineage_depth_max={max(depths, default=0)} lineage_depth_avg={(sum(depths) / len(depths)) if depths else 0:.2f} new_population_count={len(new)} primitive_equivalent_rejections={primitive_equivalent_rejections} ablation_breaks={ablation_breaks} ablation_gap={ablation_gap:.3f}")
         print("top population:", top_population)
         print("top overlaps:", top_overlaps)
+        print("top niches:", top_niches)
+        print("overlap tasks:", overlap_examples)
         print("population:", [name for name in library])
         if eval_tasks and r in {1, rounds}: evaluate(f"public eval after round {r}", eval_tasks, library)
     return library
