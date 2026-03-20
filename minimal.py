@@ -42,13 +42,13 @@ def uses_library(p, names):
     known = set(names)
     return any(size(t) > 1 and show(t) in known for t in pieces(p))
 
-def spawn(library, fronts, width=6, max_size=7):
-    frontier_programs = [p for items in fronts.values() for _, p in items]
-    ranked = list(PRIMS) + [e["program"] for e in sorted(library.values(), key=lambda e: (-e["reuse"], -e["gain"], show(e["program"])))] + frontier_programs
-    basis = unique(ranked)[:width]
-    parts = unique([t for p in basis for t in pieces(p)])[: width * 2]
-    pool = basis[:]
-    for p in basis:
+def spawn(library, fronts, width=8, max_size=9):
+    frontier_programs = unique([p for items in fronts.values() for _, p in items])
+    library_programs = [e["program"] for e in sorted(library.values(), key=lambda e: (-e["reuse"], -e["support"], -e["gain"], e["age"], size(e["program"]), show(e["program"])))]
+    evolvers = unique(library_programs[:width] + frontier_programs[:width])
+    parts = unique(list(PRIMS) + [t for p in evolvers for t in pieces(p)])[: width * 3]
+    pool = list(PRIMS) + evolvers
+    for p in evolvers:
         for q in PRIMS:
             pool += [("chain", q, p), ("chain", p, q)]
     for a in parts[:width]:
@@ -60,7 +60,18 @@ def frontier(task, pool, keep=3, old=()):
     ranked = sorted(((score(p, task["train"]), p) for p in unique(list(old) + pool)), key=lambda item: (-item[0], size(item[1]), show(item[1])))
     return ranked[:keep]
 
-def evolve(library, improved, inputs, cap=8):
+def parents_of(program):
+    return [] if isinstance(program, str) else [show(program[1]), show(program[2])]
+
+def depth_of(program, library):
+    if isinstance(program, str): return 0
+    child_depths = []
+    for child in program[1:]:
+        name = show(child)
+        child_depths.append(library[name]["depth"] if name in library else depth_of(child, library))
+    return 1 + max(child_depths, default=0)
+
+def evolve(library, improved, inputs, cap=12):
     for entry in library.values():
         entry["age"] += 1
         entry["used"] = False
@@ -82,18 +93,34 @@ def evolve(library, improved, inputs, cap=8):
                 library[name]["reuse"] += 1
                 library[name]["used"] = True
                 library[name]["age"] = 0
-    seen = {signature(name, inputs) for name in PRIMS} | {signature(entry["program"], inputs) for entry in library.values()}
+    base_sigs = {signature(name, inputs) for name in PRIMS}
+    seen = base_sigs | {signature(entry["program"], inputs) for entry in library.values()}
     ranked = sorted(gains.values(), key=lambda item: (-item["support"], -item["gain"], size(item["program"]), show(item["program"])))
-    new = []
+    new, primitive_equivalent_rejections = [], 0
     for item in ranked:
         name, sig = show(item["program"]), signature(item["program"], inputs)
+        if sig in base_sigs:
+            primitive_equivalent_rejections += 1
+            continue
         if item["support"] > 1 and sig not in seen and name not in library:
-            library[name] = {"program": item["program"], "gain": item["gain"], "support": item["support"], "reuse": 0, "age": 0, "used": False}
+            library[name] = {
+                "program": item["program"],
+                "gain": item["gain"],
+                "support": item["support"],
+                "reuse": 0,
+                "age": 0,
+                "used": False,
+                "parents": parents_of(item["program"]),
+                "depth": depth_of(item["program"], library),
+            }
             seen.add(sig)
             new.append(item)
+        elif name in library:
+            library[name]["gain"] += item["gain"]
+            library[name]["support"] += item["support"]
     keep = sorted(library.values(), key=lambda e: (-e["reuse"], -e["support"], -e["gain"], e["age"], size(e["program"]), show(e["program"])))[:cap]
     library = {show(e["program"]): e for e in keep}
-    return library, new[:cap], ranked[:5]
+    return library, new[:cap], ranked[:5], primitive_equivalent_rejections
 
 def sample_inputs(tasks, limit=8):
     grids = []
@@ -113,7 +140,7 @@ def evaluate(label, tasks, library):
         mean += s
     print(f"{label}: {int(exact)}/{len(tasks)} exact, mean test {mean / len(tasks):.3f}")
 
-def learn(label, tasks, eval_tasks=None, rounds=3, keep=3, library=None):
+def learn(label, tasks, eval_tasks=None, rounds=3, keep=4, library=None):
     library, fronts, inputs, solved_before = ({} if library is None else dict(library)), {}, sample_inputs(tasks), set()
     for r in range(1, rounds + 1):
         prior = set(library)
@@ -124,7 +151,7 @@ def learn(label, tasks, eval_tasks=None, rounds=3, keep=3, library=None):
             fronts[task_id] = frontier(task, pool, keep, [p for _, p in fronts.get(task_id, [])])
             better = [(quality - before, program) for quality, program in fronts[task_id] if quality > before]
             if better: improved[task_id] = better
-        library, new, top = evolve(library, improved, inputs)
+        library, new, top, primitive_equivalent_rejections = evolve(library, improved, inputs)
         solved = sorted(task_id for task_id, items in fronts.items() if items[0][0] == 1.0)
         fresh = sorted(set(solved) - solved_before)
         solved_before = set(solved)
@@ -134,12 +161,13 @@ def learn(label, tasks, eval_tasks=None, rounds=3, keep=3, library=None):
         gain_reuse = [delta for items in improved.values() for delta, program in items if uses_library(program, prior)]
         survivors = len(prior & set(library))
         avg_reuse = sum(entry["reuse"] for entry in library.values()) / len(library) if library else 0.0
+        depths = [entry["depth"] for entry in library.values()]
         print(f"{label} round {r}: {len(solved)}/{len(tasks)} solved, mean train {mean:.3f}, pool {len(pool)}")
         print("newly solved:", fresh[:12], "..." if len(fresh) > 12 else "")
         print("new abstractions:", [f"{show(item['program'])} s{item['support']} g{item['gain']:.2f}" for item in new])
         print("reused abstractions:", reused[:8])
         print("top candidates:", [f"{show(item['program'])} s{item['support']} g{item['gain']:.2f}" for item in top])
-        print(f"metrics: library_solves={solve_reuse} avg_library_delta={sum(gain_reuse) / len(gain_reuse) if gain_reuse else 0:.3f} survivors={survivors} avg_reuse={avg_reuse:.2f} pool_per_solve={len(pool) / max(1, len(solved)):.1f}")
+        print(f"metrics: library_solves={solve_reuse} avg_library_delta={sum(gain_reuse) / len(gain_reuse) if gain_reuse else 0:.3f} survivors={survivors} avg_reuse={avg_reuse:.2f} pool_per_solve={len(pool) / max(1, len(solved)):.1f} lineage_depth_max={max(depths, default=0)} lineage_depth_avg={(sum(depths) / len(depths)) if depths else 0:.2f} new_population_count={len(new)} primitive_equivalent_rejections={primitive_equivalent_rejections}")
         print("population:", [name for name in library])
         if eval_tasks and r in {1, rounds}: evaluate(f"public eval after round {r}", eval_tasks, library)
     return library
@@ -151,6 +179,10 @@ def task(grid, program):
 def synthetic_stages():
     pair = ("chain", "flip_h", "nonzero_mask")
     triple = ("chain", pair, "transpose")
+    quad_a = ("chain", "flip_v", triple)
+    quad_b = ("chain", triple, "flip_h")
+    quint_a = ("chain", quad_a, "flip_h")
+    quint_b = ("chain", "transpose", quad_b)
     return [
         ("stage_1", {
             "flip_h": task([[1, 0], [0, 0]], "flip_h"),
@@ -160,11 +192,19 @@ def synthetic_stages():
         }),
         ("stage_2", {
             "triple_1": task([[1, 0, 0], [0, 2, 3]], triple),
-            "triple_2": task([[0, 4, 5], [6, 0, 0]], triple),
+            "triple_2": task([[2, 0, 0], [0, 1, 4]], triple),
         }),
         ("stage_3", {
-            "hard_1": task([[1, 0, 2], [3, 0, 0]], ("chain", triple, "flip_v")),
-            "hard_2": task([[0, 5, 0], [6, 0, 7]], ("chain", triple, "flip_h")),
+            "quad_a_1": task([[0, 0, 0], [0, 0, 1]], quad_a),
+            "quad_a_2": task([[0, 0, 0], [0, 1, 2]], quad_a),
+            "quad_b_1": task([[1, 0, 0], [0, 2, 3]], quad_b),
+            "quad_b_2": task([[0, 5, 0], [6, 0, 7]], quad_b),
+        }),
+        ("stage_4", {
+            "quint_a_1": task([[0, 0, 0], [0, 0, 2]], quint_a),
+            "quint_a_2": task([[0, 0, 0], [0, 1, 3]], quint_a),
+            "quint_b_1": task([[1, 0, 0], [0, 2, 3]], quint_b),
+            "quint_b_2": task([[2, 0, 0], [0, 1, 4]], quint_b),
         }),
     ]
 
