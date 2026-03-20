@@ -1,82 +1,81 @@
 from __future__ import annotations
 
-"""Synthetic curriculum and ARC dataset loading for the minimal scaffold."""
+"""Synthetic curriculum and ARC loading."""
 
 import json
 import os
 from pathlib import Path
 
-from language import Grid, Program, run
+from language import Focus, Pipe, PrimRef, evaluate
 from learner import Library, Task, learn
 
 
-def make_task(grid: Grid, program: Program) -> Task:
-    output = run(program, grid)
-    example = (grid, output)
-    return Task(train=[example], test=[example])
+def task(grid, program) -> Task:
+    out = evaluate(program, grid)
+    return Task(train=[(grid, out)], test=[(grid, out)])
 
 
 def synthetic_stages() -> list[tuple[str, dict[str, Task]]]:
-    pair = ("local", "nonzero_mask", "flip_h")
-    triple_t = ("chain", pair, "transpose")
-    triple_v = ("chain", "flip_v", pair)
-    quad_t = ("local", "nonzero_mask", triple_t)
-    quad_v = ("chain", triple_v, "transpose")
-    quint_t = ("chain", quad_t, "transpose")
-    quint_v = ("chain", quad_v, "flip_v")
+    pair = Focus(PrimRef("nonzero"), PrimRef("reverse_cols"))
+    triple_t = Pipe(pair, PrimRef("swap_axes"))
+    triple_v = Pipe(PrimRef("reverse_rows"), pair)
+    quad_t = Focus(PrimRef("nonzero"), triple_t)
+    quad_v = Pipe(triple_v, PrimRef("swap_axes"))
+    quint_t = Pipe(quad_t, PrimRef("swap_axes"))
+    quint_v = Pipe(quad_v, PrimRef("reverse_rows"))
     return [
         ("stage_1", {
-            "flip_h": make_task([[1, 0], [0, 0]], "flip_h"),
-            "transpose": make_task([[1, 0], [2, 3]], "transpose"),
-            "pair_1": make_task([[1, 2, 0], [3, 0, 0]], pair),
-            "pair_2": make_task([[0, 4, 5], [0, 6, 0]], pair),
+            "reverse_cols": task([[1, 0], [0, 0]], PrimRef("reverse_cols")),
+            "swap_axes": task([[1, 0], [2, 3]], PrimRef("swap_axes")),
+            "pair_1": task([[1, 2, 0], [3, 0, 0]], pair),
+            "pair_2": task([[0, 4, 5], [0, 6, 0]], pair),
         }),
         ("stage_2", {
-            "triple_t_1": make_task([[1, 2, 0], [3, 0, 0]], triple_t),
-            "triple_t_2": make_task([[0, 4, 5], [0, 6, 0]], triple_t),
-            "triple_v_1": make_task([[0, 2, 3], [0, 2, 2], [0, 2, 1]], triple_v),
-            "triple_v_2": make_task([[1, 1, 0], [1, 0, 0], [2, 2, 0]], triple_v),
+            "triple_t_1": task([[1, 2, 0], [3, 0, 0]], triple_t),
+            "triple_t_2": task([[0, 4, 5], [0, 6, 0]], triple_t),
+            "triple_v_1": task([[0, 2, 3], [0, 2, 2], [0, 2, 1]], triple_v),
+            "triple_v_2": task([[1, 1, 0], [1, 0, 0], [2, 2, 0]], triple_v),
         }),
         ("stage_3", {
-            "quad_t_1": make_task([[3, 0, 2, 3], [3, 2, 3, 2]], quad_t),
-            "quad_t_2": make_task([[2, 3, 0], [0, 0, 0], [1, 1, 0]], quad_t),
-            "quad_v_1": make_task([[3, 0, 0], [2, 3, 0], [2, 2, 0]], quad_v),
-            "quad_v_2": make_task([[0, 3, 0], [0, 3, 1], [0, 3, 3]], quad_v),
+            "quad_t_1": task([[3, 0, 2, 3], [3, 2, 3, 2]], quad_t),
+            "quad_t_2": task([[2, 3, 0], [0, 0, 0], [1, 1, 0]], quad_t),
+            "quad_v_1": task([[3, 0, 0], [2, 3, 0], [2, 2, 0]], quad_v),
+            "quad_v_2": task([[0, 3, 0], [0, 3, 1], [0, 3, 3]], quad_v),
         }),
         ("stage_4", {
-            "quint_t_1": make_task([[3, 0, 2, 3], [3, 2, 3, 2]], quint_t),
-            "quint_t_2": make_task([[1, 2, 0], [3, 4, 0], [5, 0, 0]], quint_t),
-            "quint_v_1": make_task([[2, 3, 0], [0, 0, 0], [1, 1, 0]], quint_v),
-            "quint_v_2": make_task([[0, 2, 0], [3, 1, 0], [3, 3, 0]], quint_v),
+            "quint_t_1": task([[3, 0, 2, 3], [3, 2, 3, 2]], quint_t),
+            "quint_t_2": task([[1, 2, 0], [3, 4, 0], [5, 0, 0]], quint_t),
+            "quint_v_1": task([[2, 3, 0], [0, 0, 0], [1, 1, 0]], quint_v),
+            "quint_v_2": task([[0, 2, 0], [3, 1, 0], [3, 3, 0]], quint_v),
         }),
     ]
 
 
 def synthetic_choice() -> dict[str, Task]:
-    pair = ("local", "nonzero_mask", "flip_h")
-    triple_t = ("chain", pair, "transpose")
-    triple_v = ("chain", "flip_v", pair)
-    quad_t = ("local", "nonzero_mask", triple_t)
-    quad_v = ("chain", triple_v, "transpose")
-    quint_t = ("chain", quad_t, "transpose")
-    quint_v = ("chain", quad_v, "flip_v")
+    pair = Focus(PrimRef("nonzero"), PrimRef("reverse_cols"))
+    triple_t = Pipe(pair, PrimRef("swap_axes"))
+    triple_v = Pipe(PrimRef("reverse_rows"), pair)
+    quad_t = Focus(PrimRef("nonzero"), triple_t)
+    quad_v = Pipe(triple_v, PrimRef("swap_axes"))
+    quint_t = Pipe(quad_t, PrimRef("swap_axes"))
+    quint_v = Pipe(quad_v, PrimRef("reverse_rows"))
     return {
-        "choice_quad_t": make_task([[1, 2, 0], [3, 4, 0], [5, 0, 0]], quad_t),
-        "choice_quad_v": make_task([[0, 3, 0], [0, 3, 1], [0, 3, 3]], quad_v),
-        "choice_quint_t": make_task([[3, 0, 2, 3], [3, 2, 3, 2]], quint_t),
-        "choice_quint_v": make_task([[2, 3, 0], [0, 0, 0], [1, 1, 0]], quint_v),
+        "choice_quad_t": task([[1, 2, 0], [3, 4, 0], [5, 0, 0]], quad_t),
+        "choice_quad_v": task([[0, 3, 0], [0, 3, 1], [0, 3, 3]], quad_v),
+        "choice_quint_t": task([[3, 0, 2, 3], [3, 2, 3, 2]], quint_t),
+        "choice_quint_v": task([[2, 3, 0], [0, 0, 0], [1, 1, 0]], quint_v),
     }
 
 
 def run_synthetic() -> None:
     library: Library = {}
-    for stage_name, tasks in synthetic_stages():
-        library = learn(f"synthetic {stage_name}", tasks, rounds=1, library=library)
+    for stage, tasks in synthetic_stages():
+        library = learn(f"synthetic {stage}", tasks, rounds=1, library=library)
     learn("synthetic choice", synthetic_choice(), rounds=1, library=library, freeze=True)
 
 
-def find_arc_root(script_path: Path | None = None) -> Path:
-    here = (script_path or Path(__file__)).resolve().parent
+def arc_root() -> Path:
+    here = Path(__file__).resolve().parent
     checked = [
         os.getenv("ARC_AGI_1_TRAIN_DIR"),
         here / "data/ARC-AGI/data/training",
@@ -100,7 +99,7 @@ def load_arc_task(path: Path) -> Task:
 
 
 def load_arc_split(split: str) -> dict[str, Task]:
-    root = find_arc_root()
+    root = arc_root()
     base = root if split == "training" else root.parent / split
     return {path.stem: load_arc_task(path) for path in sorted(base.glob("*.json"))}
 

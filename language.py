@@ -1,100 +1,123 @@
 from __future__ import annotations
 
-"""Tiny typed grid language used by the 4-pillar scaffold."""
+"""Typed program language for a tiny grid learner."""
 
-from typing import Any, TypeAlias
+from dataclasses import dataclass
+from typing import Callable, Literal
 
-Grid: TypeAlias = list[list[int]]
-Example: TypeAlias = tuple[Grid, Grid]
-Program: TypeAlias = str | tuple[str, Any, Any]
+Grid = list[list[int]]
+Kind = Literal["grid", "mask"]
+
+
+@dataclass(frozen=True)
+class Primitive:
+    name: str
+    input_kind: Kind
+    output_kind: Kind
+    fn: Callable[[Grid], Grid]
+
+
+@dataclass(frozen=True)
+class PrimRef:
+    name: str
+
+
+@dataclass(frozen=True)
+class Pipe:
+    left: "Program"
+    right: "Program"
+
+
+@dataclass(frozen=True)
+class Focus:
+    selector: "Program"
+    transform: "Program"
+
+
+Program = PrimRef | Pipe | Focus
 
 
 def identity(grid: Grid) -> Grid:
     return [row[:] for row in grid]
 
 
-def flip_h(grid: Grid) -> Grid:
-    return [row[::-1] for row in grid]
-
-
-def flip_v(grid: Grid) -> Grid:
+def reverse_rows(grid: Grid) -> Grid:
     return grid[::-1]
 
 
-def transpose(grid: Grid) -> Grid:
+def reverse_cols(grid: Grid) -> Grid:
+    return [row[::-1] for row in grid]
+
+
+def swap_axes(grid: Grid) -> Grid:
     return [list(row) for row in zip(*grid)]
 
 
-def nonzero_mask(grid: Grid) -> Grid:
+def nonzero(grid: Grid) -> Grid:
     return [[1 if cell else 0 for cell in row] for row in grid]
 
 
-GRID_PRIMITIVES = {
-    "identity": identity,
-    "flip_h": flip_h,
-    "flip_v": flip_v,
-    "transpose": transpose,
+def invert(mask: Grid) -> Grid:
+    return [[0 if cell else 1 for cell in row] for row in mask]
+
+
+PRIMITIVES = {
+    primitive.name: primitive
+    for primitive in [
+        Primitive("identity", "grid", "grid", identity),
+        Primitive("reverse_rows", "grid", "grid", reverse_rows),
+        Primitive("reverse_cols", "grid", "grid", reverse_cols),
+        Primitive("swap_axes", "grid", "grid", swap_axes),
+        Primitive("nonzero", "grid", "mask", nonzero),
+        Primitive("invert", "mask", "mask", invert),
+    ]
 }
 
-MASK_PRIMITIVES = {
-    "nonzero_mask": nonzero_mask,
-}
 
-ALL_PRIMITIVES = GRID_PRIMITIVES | MASK_PRIMITIVES
+def input_kind(program: Program) -> Kind:
+    if isinstance(program, PrimRef):
+        return PRIMITIVES[program.name].input_kind
+    if isinstance(program, Pipe):
+        return input_kind(program.left)
+    return "grid"
 
 
-def program_kind(program: Program) -> str | None:
-    if isinstance(program, str):
-        return "mask" if program in MASK_PRIMITIVES else "grid"
-    return "grid" if program[0] in {"chain", "local"} else None
+def output_kind(program: Program) -> Kind:
+    if isinstance(program, PrimRef):
+        return PRIMITIVES[program.name].output_kind
+    if isinstance(program, Pipe):
+        return output_kind(program.right)
+    return "grid"
 
 
 def render(program: Program) -> str:
-    if isinstance(program, str):
-        return program
-    return f"{program[0]}({render(program[1])}, {render(program[2])})"
+    if isinstance(program, PrimRef):
+        return program.name
+    if isinstance(program, Pipe):
+        return f"pipe({render(program.left)}, {render(program.right)})"
+    return f"focus({render(program.selector)}, {render(program.transform)})"
 
 
-def size(program: Program) -> int:
-    if isinstance(program, str):
+def cost(program: Program, learned: set[str] | None = None) -> int:
+    learned = set() if learned is None else learned
+    if render(program) in learned:
         return 1
-    return 1 + size(program[1]) + size(program[2])
-
-
-def cost(program: Program, learned_names: tuple[str, ...] = ()) -> int:
-    if size(program) > 1 and render(program) in set(learned_names):
+    if isinstance(program, PrimRef):
         return 1
-    if isinstance(program, str):
-        return 1
-    return 1 + cost(program[1], learned_names) + cost(program[2], learned_names)
+    if isinstance(program, Pipe):
+        return 1 + cost(program.left, learned) + cost(program.right, learned)
+    return 1 + cost(program.selector, learned) + cost(program.transform, learned)
 
 
-def subtrees(program: Program) -> list[Program]:
-    if isinstance(program, str):
-        return []
-    return [program, *subtrees(program[1]), *subtrees(program[2])]
+def walk(program: Program) -> list[Program]:
+    if isinstance(program, PrimRef):
+        return [program]
+    if isinstance(program, Pipe):
+        return [program, *walk(program.left), *walk(program.right)]
+    return [program, *walk(program.selector), *walk(program.transform)]
 
 
-def pieces(program: Program) -> list[Program]:
-    return [program, *subtrees(program)]
-
-
-def unique(programs: list[Program]) -> list[Program]:
-    seen: set[str] = set()
-    out: list[Program] = []
-    for program in programs:
-        name = render(program)
-        if name not in seen:
-            seen.add(name)
-            out.append(program)
-    return out
-
-
-def uses_library(program: Program, learned_names: set[str]) -> bool:
-    return any(size(piece) > 1 and render(piece) in learned_names for piece in pieces(program))
-
-
-def bounding_box(mask: Grid) -> tuple[int, int, int, int] | None:
+def bbox(mask: Grid) -> tuple[int, int, int, int] | None:
     cells = [(r, c) for r, row in enumerate(mask) for c, value in enumerate(row) if value]
     if not cells:
         return None
@@ -123,27 +146,28 @@ def paste(base: Grid, patch: Grid, box: tuple[int, int, int, int]) -> Grid:
     return out
 
 
-def run(program: Program, grid: Grid) -> Grid:
-    if isinstance(program, str):
-        return ALL_PRIMITIVES[program](grid)
-    op, left, right = program
-    if op == "chain":
-        return run(right, run(left, grid))
-    mask = run(left, grid)
-    box = bounding_box(mask)
+def evaluate(program: Program, grid: Grid) -> Grid:
+    if isinstance(program, PrimRef):
+        return PRIMITIVES[program.name].fn(grid)
+    if isinstance(program, Pipe):
+        return evaluate(program.right, evaluate(program.left, grid))
+    mask = evaluate(program.selector, grid)
+    if len(mask) != len(grid) or len(mask[0]) != len(grid[0]):
+        return grid
+    box = bbox(mask)
     if not box:
         return grid
-    patch = run(right, crop(grid, box))
+    patch = evaluate(program.transform, crop(grid, box))
     height, width = box[1] - box[0], box[3] - box[2]
     return paste(grid, fit(patch, height, width), box)
 
 
-def score(program: Program, examples: list[Example]) -> float:
-    if program_kind(program) != "grid":
+def score(program: Program, examples: list[tuple[Grid, Grid]]) -> float:
+    if output_kind(program) != "grid":
         return 0.0
     total = hits = 0
     for inp, out in examples:
-        got = run(program, inp)
+        got = evaluate(program, inp)
         if len(got) != len(out) or len(got[0]) != len(out[0]):
             continue
         total += sum(len(row) for row in out)
@@ -152,19 +176,15 @@ def score(program: Program, examples: list[Example]) -> float:
 
 
 def signature(program: Program, inputs: list[Grid]) -> tuple[tuple[tuple[int, ...], ...], ...]:
-    return tuple(tuple(tuple(row) for row in run(program, grid)) for grid in inputs)
+    return tuple(tuple(tuple(row) for row in evaluate(program, grid)) for grid in inputs)
 
 
-def nodes(program: Program, path: tuple[int, ...] = ()) -> list[tuple[tuple[int, ...], Program]]:
-    out = [(path, program)]
-    if isinstance(program, str):
-        return out
-    return out + nodes(program[1], path + (1,)) + nodes(program[2], path + (2,))
-
-
-def replace(program: Program, path: tuple[int, ...], new: Program) -> Program:
-    if not path:
-        return new
-    mutable = list(program)
-    mutable[path[0]] = replace(program[path[0]], path[1:], new)
-    return tuple(mutable)
+def unique(programs: list[Program]) -> list[Program]:
+    seen: set[str] = set()
+    out: list[Program] = []
+    for program in programs:
+        name = render(program)
+        if name not in seen:
+            seen.add(name)
+            out.append(program)
+    return out
