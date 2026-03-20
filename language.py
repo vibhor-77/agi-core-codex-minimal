@@ -1,218 +1,133 @@
 from __future__ import annotations
 
-"""Typed program language for a tiny grid learner."""
+"""Typed coordinate/mask calculus for a tiny grid learner."""
 
 from dataclasses import dataclass
-from typing import Callable, Literal
+from typing import Literal
 
 Grid = list[list[int]]
-Kind = Literal["grid", "mask"]
+Kind = Literal["int", "mask", "grid"]
 
 
 @dataclass(frozen=True)
-class Primitive:
-    name: str
-    input_kind: Kind
-    output_kind: Kind
-    fn: Callable[[Grid], Grid]
+class IntConst:
+    value: int
 
 
 @dataclass(frozen=True)
-class PrimRef:
-    name: str
+class Row:
+    pass
 
 
 @dataclass(frozen=True)
-class Pipe:
-    left: "Program"
-    right: "Program"
+class Col:
+    pass
 
 
 @dataclass(frozen=True)
-class Focus:
-    selector: "Program"
-    transform: "Program"
+class Height:
+    pass
+
+
+@dataclass(frozen=True)
+class Width:
+    pass
+
+
+@dataclass(frozen=True)
+class Add:
+    left: "IntExpr"
+    right: "IntExpr"
+
+
+@dataclass(frozen=True)
+class Sub:
+    left: "IntExpr"
+    right: "IntExpr"
+
+
+IntExpr = IntConst | Row | Col | Height | Width | Add | Sub
+
+
+@dataclass(frozen=True)
+class Identity:
+    pass
+
+
+@dataclass(frozen=True)
+class Compose:
+    left: "GridExpr"
+    right: "GridExpr"
 
 
 @dataclass(frozen=True)
 class Remap:
-    """Map each output cell back to a source coordinate."""
-
-    row_expr: str
-    col_expr: str
-
-
-@dataclass(frozen=True)
-class CoordEq:
-    """Coordinate equality predicate such as row == col or row == 0."""
-
-    left_expr: str
-    right_expr: str
-
-
-@dataclass(frozen=True)
-class MaskAnd:
-    left: "Program"
-    right: "Program"
-
-
-@dataclass(frozen=True)
-class MaskOr:
-    left: "Program"
-    right: "Program"
+    row: IntExpr
+    col: IntExpr
 
 
 @dataclass(frozen=True)
 class Select:
-    mask: "Program"
-    when_true: "Program"
-    when_false: "Program"
+    mask: "MaskExpr"
+    when_true: "GridExpr"
+    when_false: "GridExpr"
 
 
-Program = PrimRef | Pipe | Focus | Remap | CoordEq | MaskAnd | MaskOr | Select
+@dataclass(frozen=True)
+class Focus:
+    mask: "MaskExpr"
+    inner: "GridExpr"
 
 
-def identity(grid: Grid) -> Grid:
+GridExpr = Identity | Compose | Remap | Select | Focus
+
+
+@dataclass(frozen=True)
+class NonZero:
+    grid: GridExpr
+
+
+@dataclass(frozen=True)
+class Eq:
+    left: IntExpr
+    right: IntExpr
+
+
+@dataclass(frozen=True)
+class And:
+    left: "MaskExpr"
+    right: "MaskExpr"
+
+
+@dataclass(frozen=True)
+class Or:
+    left: "MaskExpr"
+    right: "MaskExpr"
+
+
+@dataclass(frozen=True)
+class Not:
+    inner: "MaskExpr"
+
+
+MaskExpr = NonZero | Eq | And | Or | Not
+Expr = IntExpr | MaskExpr | GridExpr
+
+
+ZERO = IntConst(0)
+ONE = IntConst(1)
+IDENTITY = Identity()
+
+
+def copy_grid(grid: Grid) -> Grid:
     return [row[:] for row in grid]
 
 
-def nonzero(grid: Grid) -> Grid:
-    return [[1 if cell else 0 for cell in row] for row in grid]
-
-
-def invert(mask: Grid) -> Grid:
-    return [[0 if cell else 1 for cell in row] for row in mask]
-
-
-PRIMITIVES = {
-    primitive.name: primitive
-    for primitive in [
-        Primitive("identity", "grid", "grid", identity),
-        Primitive("nonzero", "grid", "mask", nonzero),
-        Primitive("invert", "mask", "mask", invert),
-    ]
-}
-
-# Candidate source-coordinate formulas. Higher-level moves such as mirror and
-# transpose are meant to emerge from these, not appear as named primitives.
-ROW_EXPR = ("row", "height-1-row", "col", "height-1-col")
-COL_EXPR = ("col", "width-1-col", "row", "width-1-row")
-PREDICATE_EXPR = ("zero",) + ROW_EXPR + COL_EXPR
-
-
-def input_kind(program: Program) -> Kind:
-    if isinstance(program, PrimRef):
-        return PRIMITIVES[program.name].input_kind
-    if isinstance(program, (Remap, CoordEq)):
-        return "grid"
-    if isinstance(program, (MaskAnd, MaskOr)):
-        return "mask"
-    if isinstance(program, Pipe):
-        return input_kind(program.left)
-    return "grid"
-
-
-def output_kind(program: Program) -> Kind:
-    if isinstance(program, PrimRef):
-        return PRIMITIVES[program.name].output_kind
-    if isinstance(program, Remap):
-        return "grid"
-    if isinstance(program, CoordEq):
-        return "mask"
-    if isinstance(program, (MaskAnd, MaskOr)):
-        return "mask"
-    if isinstance(program, Select):
-        return "grid"
-    if isinstance(program, Pipe):
-        return output_kind(program.right)
-    return "grid"
-
-
-def render(program: Program) -> str:
-    if isinstance(program, PrimRef):
-        return program.name
-    if isinstance(program, Remap):
-        return f"remap({program.row_expr}, {program.col_expr})"
-    if isinstance(program, CoordEq):
-        return f"coord_eq({program.left_expr}, {program.right_expr})"
-    if isinstance(program, MaskAnd):
-        return f"mask_and({render(program.left)}, {render(program.right)})"
-    if isinstance(program, MaskOr):
-        return f"mask_or({render(program.left)}, {render(program.right)})"
-    if isinstance(program, Select):
-        return f"select({render(program.mask)}, {render(program.when_true)}, {render(program.when_false)})"
-    if isinstance(program, Pipe):
-        return f"pipe({render(program.left)}, {render(program.right)})"
-    return f"focus({render(program.selector)}, {render(program.transform)})"
-
-
-def cost(program: Program, learned: set[str] | None = None) -> int:
-    learned = set() if learned is None else learned
-    if render(program) in learned:
-        return 1
-    if isinstance(program, PrimRef):
-        return 1
-    if isinstance(program, (Remap, CoordEq)):
-        return 1
-    if isinstance(program, (MaskAnd, MaskOr)):
-        return 1 + cost(program.left, learned) + cost(program.right, learned)
-    if isinstance(program, Select):
-        return 1 + cost(program.mask, learned) + cost(program.when_true, learned) + cost(program.when_false, learned)
-    if isinstance(program, Pipe):
-        return 1 + cost(program.left, learned) + cost(program.right, learned)
-    return 1 + cost(program.selector, learned) + cost(program.transform, learned)
-
-
-def walk(program: Program) -> list[Program]:
-    if isinstance(program, (PrimRef, Remap, CoordEq)):
-        return [program]
-    if isinstance(program, (MaskAnd, MaskOr)):
-        return [program, *walk(program.left), *walk(program.right)]
-    if isinstance(program, Select):
-        return [program, *walk(program.mask), *walk(program.when_true), *walk(program.when_false)]
-    if isinstance(program, Pipe):
-        return [program, *walk(program.left), *walk(program.right)]
-    return [program, *walk(program.selector), *walk(program.transform)]
-
-
-def remap_family() -> list[Remap]:
+def fit(grid: Grid, height: int, width: int) -> Grid:
     return [
-        Remap(row_expr, col_expr)
-        for row_expr in ROW_EXPR
-        for col_expr in COL_EXPR
-        if output_axis(row_expr) != output_axis(col_expr)
+        [grid[r][c] if r < len(grid) and c < len(grid[0]) else 0 for c in range(width)]
+        for r in range(height)
     ]
-
-
-def coord_mask_family() -> list[CoordEq]:
-    return [
-        CoordEq(left_expr, right_expr)
-        for left_expr in PREDICATE_EXPR
-        for right_expr in PREDICATE_EXPR
-        if left_expr < right_expr
-    ]
-
-
-def output_axis(expr: str) -> str:
-    return "row" if expr.endswith("row") else "col"
-
-
-def expr_value(expr: str, row: int, col: int, height: int, width: int) -> int:
-    return {
-        "zero": 0,
-        "row": row,
-        "height-1-row": height - 1 - row,
-        "col": col,
-        "height-1-col": height - 1 - col,
-        "width-1-col": width - 1 - col,
-        "width-1-row": width - 1 - row,
-    }[expr]
-
-
-def remap_shape(program: Remap, height: int, width: int) -> tuple[int, int]:
-    out_height = height if output_axis(program.row_expr) == "row" else width
-    out_width = width if output_axis(program.col_expr) == "col" else height
-    return out_height, out_width
 
 
 def bbox(mask: Grid) -> tuple[int, int, int, int] | None:
@@ -228,85 +143,240 @@ def crop(grid: Grid, box: tuple[int, int, int, int]) -> Grid:
     return [row[c0:c1] for row in grid[r0:r1]]
 
 
-def fit(grid: Grid, height: int, width: int) -> Grid:
-    return [
-        [grid[r][c] if r < len(grid) and c < len(grid[0]) else 0 for c in range(width)]
-        for r in range(height)
-    ]
-
-
 def paste(base: Grid, patch: Grid, box: tuple[int, int, int, int]) -> Grid:
     r0, r1, c0, c1 = box
-    out = [row[:] for row in base]
+    out = copy_grid(base)
     for r in range(r1 - r0):
         for c in range(c1 - c0):
             out[r0 + r][c0 + c] = patch[r][c]
     return out
 
 
-def evaluate(program: Program, grid: Grid) -> Grid:
-    if isinstance(program, PrimRef):
-        return PRIMITIVES[program.name].fn(grid)
-    if isinstance(program, Remap):
-        height, width = len(grid), len(grid[0])
-        out_height, out_width = remap_shape(program, height, width)
+def kind(expr: Expr) -> Kind:
+    if isinstance(expr, (IntConst, Row, Col, Height, Width, Add, Sub)):
+        return "int"
+    if isinstance(expr, (NonZero, Eq, And, Or, Not)):
+        return "mask"
+    return "grid"
+
+
+def render_int(expr: IntExpr) -> str:
+    if isinstance(expr, IntConst):
+        return str(expr.value)
+    if isinstance(expr, Row):
+        return "row"
+    if isinstance(expr, Col):
+        return "col"
+    if isinstance(expr, Height):
+        return "height"
+    if isinstance(expr, Width):
+        return "width"
+    if isinstance(expr, Add):
+        if expr.right == ONE:
+            return f"{render_int(expr.left)}+1"
+        return f"add({render_int(expr.left)}, {render_int(expr.right)})"
+    if expr.right == ONE:
+        return f"{render_int(expr.left)}-1"
+    if expr.left in {Height(), Width()} and isinstance(expr.right, Add) and expr.right.right == ONE:
+        return f"{render_int(expr.left)}-1-{render_int(expr.right.left)}"
+    return f"sub({render_int(expr.left)}, {render_int(expr.right)})"
+
+
+def render_mask(expr: MaskExpr) -> str:
+    if isinstance(expr, NonZero):
+        return f"nonzero({render_grid(expr.grid)})"
+    if isinstance(expr, Eq):
+        return f"eq({render_int(expr.left)}, {render_int(expr.right)})"
+    if isinstance(expr, And):
+        return f"and({render_mask(expr.left)}, {render_mask(expr.right)})"
+    if isinstance(expr, Or):
+        return f"or({render_mask(expr.left)}, {render_mask(expr.right)})"
+    return f"not({render_mask(expr.inner)})"
+
+
+def render_grid(expr: GridExpr) -> str:
+    if isinstance(expr, Identity):
+        return "identity"
+    if isinstance(expr, Compose):
+        return f"compose({render_grid(expr.left)}, {render_grid(expr.right)})"
+    if isinstance(expr, Remap):
+        return f"remap({render_int(expr.row)}, {render_int(expr.col)})"
+    if isinstance(expr, Select):
+        return f"select({render_mask(expr.mask)}, {render_grid(expr.when_true)}, {render_grid(expr.when_false)})"
+    return f"focus({render_mask(expr.mask)}, {render_grid(expr.inner)})"
+
+
+def render(expr: Expr) -> str:
+    if kind(expr) == "int":
+        return render_int(expr)  # type: ignore[arg-type]
+    if kind(expr) == "mask":
+        return render_mask(expr)  # type: ignore[arg-type]
+    return render_grid(expr)  # type: ignore[arg-type]
+
+
+def cost(expr: Expr, learned: set[str] | None = None) -> int:
+    learned = set() if learned is None else learned
+    if render(expr) in learned:
+        return 1
+    if isinstance(expr, (IntConst, Row, Col, Height, Width, Identity)):
+        return 1
+    if isinstance(expr, (Add, Sub)):
+        return 1 + cost(expr.left, learned) + cost(expr.right, learned)
+    if isinstance(expr, NonZero):
+        return 1 + cost(expr.grid, learned)
+    if isinstance(expr, Eq):
+        return 1 + cost(expr.left, learned) + cost(expr.right, learned)
+    if isinstance(expr, (And, Or)):
+        return 1 + cost(expr.left, learned) + cost(expr.right, learned)
+    if isinstance(expr, Not):
+        return 1 + cost(expr.inner, learned)
+    if isinstance(expr, Compose):
+        return 1 + cost(expr.left, learned) + cost(expr.right, learned)
+    if isinstance(expr, Remap):
+        return 1 + cost(expr.row, learned) + cost(expr.col, learned)
+    if isinstance(expr, Select):
+        return 1 + cost(expr.mask, learned) + cost(expr.when_true, learned) + cost(expr.when_false, learned)
+    return 1 + cost(expr.mask, learned) + cost(expr.inner, learned)
+
+
+def walk(expr: Expr) -> list[Expr]:
+    if isinstance(expr, (IntConst, Row, Col, Height, Width, Identity)):
+        return [expr]
+    if isinstance(expr, (Add, Sub)):
+        return [expr, *walk(expr.left), *walk(expr.right)]
+    if isinstance(expr, NonZero):
+        return [expr, *walk(expr.grid)]
+    if isinstance(expr, Eq):
+        return [expr, *walk(expr.left), *walk(expr.right)]
+    if isinstance(expr, (And, Or)):
+        return [expr, *walk(expr.left), *walk(expr.right)]
+    if isinstance(expr, Not):
+        return [expr, *walk(expr.inner)]
+    if isinstance(expr, Compose):
+        return [expr, *walk(expr.left), *walk(expr.right)]
+    if isinstance(expr, Remap):
+        return [expr, *walk(expr.row), *walk(expr.col)]
+    if isinstance(expr, Select):
+        return [expr, *walk(expr.mask), *walk(expr.when_true), *walk(expr.when_false)]
+    return [expr, *walk(expr.mask), *walk(expr.inner)]
+
+
+def expr_vars(expr: IntExpr) -> set[str]:
+    if isinstance(expr, Row):
+        return {"row"}
+    if isinstance(expr, Col):
+        return {"col"}
+    if isinstance(expr, Height):
+        return {"height"}
+    if isinstance(expr, Width):
+        return {"width"}
+    if isinstance(expr, IntConst):
+        return set()
+    return expr_vars(expr.left) | expr_vars(expr.right)
+
+
+def axis(expr: IntExpr) -> Literal["row", "col"] | None:
+    vars_used = expr_vars(expr)
+    if vars_used <= {"row", "height"} and vars_used:
+        return "row"
+    if vars_used <= {"col", "width"} and vars_used:
+        return "col"
+    return None
+
+
+def eval_int(expr: IntExpr, row: int, col: int, height: int, width: int) -> int:
+    if isinstance(expr, IntConst):
+        return expr.value
+    if isinstance(expr, Row):
+        return row
+    if isinstance(expr, Col):
+        return col
+    if isinstance(expr, Height):
+        return height
+    if isinstance(expr, Width):
+        return width
+    if isinstance(expr, Add):
+        return eval_int(expr.left, row, col, height, width) + eval_int(expr.right, row, col, height, width)
+    return eval_int(expr.left, row, col, height, width) - eval_int(expr.right, row, col, height, width)
+
+
+def remap_shape(expr: Remap, height: int, width: int) -> tuple[int, int]:
+    row_axis = axis(expr.row)
+    col_axis = axis(expr.col)
+    out_height = height if row_axis == "row" else width
+    out_width = width if col_axis == "col" else height
+    return out_height, out_width
+
+
+def eval_mask(expr: MaskExpr, grid: Grid) -> Grid:
+    height, width = len(grid), len(grid[0])
+    if isinstance(expr, NonZero):
+        return [[1 if cell else 0 for cell in row] for row in eval_grid(expr.grid, grid)]
+    if isinstance(expr, Eq):
         return [
             [
-                grid[
-                    expr_value(program.row_expr, row, col, height, width)
-                ][
-                    expr_value(program.col_expr, row, col, height, width)
-                ]
-                for col in range(out_width)
+                1 if eval_int(expr.left, r, c, height, width) == eval_int(expr.right, r, c, height, width) else 0
+                for c in range(width)
             ]
-            for row in range(out_height)
+            for r in range(height)
         ]
-    if isinstance(program, CoordEq):
-        height, width = len(grid), len(grid[0])
-        return [
-            [
-                1 if expr_value(program.left_expr, row, col, height, width) == expr_value(program.right_expr, row, col, height, width) else 0
-                for col in range(width)
-            ]
-            for row in range(height)
-        ]
-    if isinstance(program, MaskAnd):
-        left = evaluate(program.left, grid)
-        right = evaluate(program.right, grid)
+    if isinstance(expr, And):
+        left = eval_mask(expr.left, grid)
+        right = eval_mask(expr.right, grid)
         return [[1 if a and b else 0 for a, b in zip(row_a, row_b)] for row_a, row_b in zip(left, right)]
-    if isinstance(program, MaskOr):
-        left = evaluate(program.left, grid)
-        right = evaluate(program.right, grid)
+    if isinstance(expr, Or):
+        left = eval_mask(expr.left, grid)
+        right = eval_mask(expr.right, grid)
         return [[1 if a or b else 0 for a, b in zip(row_a, row_b)] for row_a, row_b in zip(left, right)]
-    if isinstance(program, Select):
-        mask = evaluate(program.mask, grid)
-        when_true = evaluate(program.when_true, grid)
-        when_false = evaluate(program.when_false, grid)
-        if any(len(item) != len(grid) or len(item[0]) != len(grid[0]) for item in (mask, when_true, when_false)):
-            return grid
+    inner = eval_mask(expr.inner, grid)
+    return [[0 if cell else 1 for cell in row] for row in inner]
+
+
+def eval_grid(expr: GridExpr, grid: Grid) -> Grid:
+    if isinstance(expr, Identity):
+        return copy_grid(grid)
+    if isinstance(expr, Compose):
+        return eval_grid(expr.right, eval_grid(expr.left, grid))
+    if isinstance(expr, Remap):
+        height, width = len(grid), len(grid[0])
+        row_axis, col_axis = axis(expr.row), axis(expr.col)
+        if row_axis is None or col_axis is None or row_axis == col_axis:
+            return copy_grid(grid)
+        out_height, out_width = remap_shape(expr, height, width)
+        out: Grid = []
+        for r in range(out_height):
+            row_out: list[int] = []
+            for c in range(out_width):
+                src_r = eval_int(expr.row, r, c, height, width)
+                src_c = eval_int(expr.col, r, c, height, width)
+                row_out.append(grid[src_r][src_c] if 0 <= src_r < height and 0 <= src_c < width else 0)
+            out.append(row_out)
+        return out
+    if isinstance(expr, Select):
+        mask = eval_mask(expr.mask, grid)
+        when_true = fit(eval_grid(expr.when_true, grid), len(grid), len(grid[0]))
+        when_false = fit(eval_grid(expr.when_false, grid), len(grid), len(grid[0]))
         return [
             [a if use else b for use, a, b in zip(mask_row, true_row, false_row)]
             for mask_row, true_row, false_row in zip(mask, when_true, when_false)
         ]
-    if isinstance(program, Pipe):
-        return evaluate(program.right, evaluate(program.left, grid))
-    mask = evaluate(program.selector, grid)
-    if len(mask) != len(grid) or len(mask[0]) != len(grid[0]):
-        return grid
+    mask = eval_mask(expr.mask, grid)
     box = bbox(mask)
     if not box:
-        return grid
-    patch = evaluate(program.transform, crop(grid, box))
-    height, width = box[1] - box[0], box[3] - box[2]
-    return paste(grid, fit(patch, height, width), box)
+        return copy_grid(grid)
+    patch = crop(grid, box)
+    inner = fit(eval_grid(expr.inner, patch), box[1] - box[0], box[3] - box[2])
+    return paste(grid, inner, box)
 
 
-def score(program: Program, examples: list[tuple[Grid, Grid]]) -> float:
-    if output_kind(program) != "grid":
-        return 0.0
+def evaluate(expr: GridExpr, grid: Grid) -> Grid:
+    return eval_grid(expr, grid)
+
+
+def score(expr: GridExpr, examples: list[tuple[Grid, Grid]]) -> float:
     total = hits = 0
     for inp, out in examples:
-        got = evaluate(program, inp)
+        got = evaluate(expr, inp)
         if len(got) != len(out) or len(got[0]) != len(out[0]):
             continue
         total += sum(len(row) for row in out)
@@ -314,16 +384,57 @@ def score(program: Program, examples: list[tuple[Grid, Grid]]) -> float:
     return hits / total if total else 0.0
 
 
-def signature(program: Program, inputs: list[Grid]) -> tuple[tuple[tuple[int, ...], ...], ...]:
-    return tuple(tuple(tuple(row) for row in evaluate(program, grid)) for grid in inputs)
+def signature(expr: Expr, inputs: list[Grid]) -> tuple[tuple[tuple[int, ...], ...], ...]:
+    if kind(expr) == "mask":
+        return tuple(tuple(tuple(row) for row in eval_mask(expr, grid)) for grid in inputs)  # type: ignore[arg-type]
+    if kind(expr) == "grid":
+        return tuple(tuple(tuple(row) for row in eval_grid(expr, grid)) for grid in inputs)  # type: ignore[arg-type]
+    return tuple((((eval_int(expr, 0, 0, len(grid), len(grid[0])),),),) for grid in inputs)  # type: ignore[arg-type]
 
 
-def unique(programs: list[Program]) -> list[Program]:
+def unique(exprs: list[Expr]) -> list[Expr]:
     seen: set[str] = set()
-    out: list[Program] = []
-    for program in programs:
-        name = render(program)
+    out: list[Expr] = []
+    for expr in exprs:
+        name = render(expr)
         if name not in seen:
             seen.add(name)
-            out.append(program)
+            out.append(expr)
     return out
+
+
+def row_like_exprs() -> list[IntExpr]:
+    return [
+        Row(),
+        Add(Row(), ONE),
+        Sub(Row(), ONE),
+        Sub(Sub(Height(), ONE), Row()),
+    ]
+
+
+def col_like_exprs() -> list[IntExpr]:
+    return [
+        Col(),
+        Add(Col(), ONE),
+        Sub(Col(), ONE),
+        Sub(Sub(Width(), ONE), Col()),
+    ]
+
+
+def grid_seeds() -> list[GridExpr]:
+    coords = row_like_exprs() + col_like_exprs()
+    remaps = [Remap(row, col) for row in coords for col in coords if axis(row) and axis(col) and axis(row) != axis(col)]
+    return unique([IDENTITY] + remaps)
+
+
+def mask_seeds() -> list[MaskExpr]:
+    last_row = Sub(Height(), ONE)
+    last_col = Sub(Width(), ONE)
+    return unique([
+        NonZero(IDENTITY),
+        Eq(Row(), Col()),
+        Eq(Row(), ZERO),
+        Eq(Col(), ZERO),
+        Eq(Row(), last_row),
+        Eq(Col(), last_col),
+    ])

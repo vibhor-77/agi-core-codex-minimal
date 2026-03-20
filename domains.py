@@ -1,84 +1,114 @@
 from __future__ import annotations
 
-"""Synthetic curriculum and ARC loading."""
+"""Synthetic curriculum, ARC loading, and task inspection."""
 
 import json
 import os
 from pathlib import Path
 
-from language import Focus, Pipe, PrimRef, Remap, evaluate
-from learner import Library, Task, learn
+from language import (
+    Col,
+    Compose,
+    Eq,
+    Focus,
+    GridExpr,
+    Height,
+    IDENTITY,
+    ONE,
+    Remap,
+    Row,
+    Select,
+    Sub,
+    Width,
+    ZERO,
+    NonZero,
+    evaluate,
+)
+from learner import ARC_CONFIG, SYNTHETIC_CONFIG, Library, Task, evaluate_tasks, inspect_task, learn
 
 
-# Synthetic targets can name these remaps for readability even though the
-# learner only sees them as coordinate formulas.
-H_MIRROR = Remap("row", "width-1-col")
-V_MIRROR = Remap("height-1-row", "col")
-TRANSPOSE = Remap("col", "row")
-
-
-def task(grid, program) -> Task:
+def task(grid, program: GridExpr) -> Task:
     out = evaluate(program, grid)
     return Task(train=[(grid, out)], test=[(grid, out)])
 
 
+def mirror_h() -> GridExpr:
+    return Remap(Row(), Sub(Sub(Width(), ONE), Col()))
+
+
+def transpose() -> GridExpr:
+    return Remap(Col(), Row())
+
+
+def last_row() -> Eq:
+    return Eq(Row(), Sub(Height(), ONE))
+
+
+def diagonal() -> Eq:
+    return Eq(Row(), Col())
+
+
+def support() -> NonZero:
+    return NonZero(IDENTITY)
+
+
 def synthetic_stages() -> list[tuple[str, dict[str, Task]]]:
-    pair = Focus(PrimRef("nonzero"), H_MIRROR)
-    triple_t = Pipe(pair, TRANSPOSE)
-    triple_v = Pipe(V_MIRROR, pair)
-    quad_t = Focus(PrimRef("nonzero"), triple_t)
-    quad_v = Pipe(triple_v, TRANSPOSE)
-    quint_t = Pipe(quad_t, TRANSPOSE)
-    quint_v = Pipe(quad_v, V_MIRROR)
+    local_mirror = Focus(support(), mirror_h())
+    branch_a = Select(diagonal(), local_mirror, IDENTITY)
+    branch_b = Select(Eq(Row(), ZERO), transpose(), IDENTITY)
+    mix_left = Select(Eq(Col(), ZERO), branch_b, branch_a)
+    mix_last = Select(last_row(), branch_b, branch_a)
+    mix_top = Select(Eq(Row(), ZERO), branch_b, branch_a)
     return [
         ("stage_1", {
-            "mirror_h": task([[1, 2, 0], [3, 0, 4]], H_MIRROR),
-            "transpose": task([[1, 0, 2], [3, 4, 0]], TRANSPOSE),
-            "pair_1": task([[1, 2, 0], [3, 0, 0]], pair),
-            "pair_2": task([[0, 4, 5], [0, 6, 0]], pair),
+            "mirror_h": task([[1, 2, 0], [3, 0, 4]], mirror_h()),
+            "transpose": task([[1, 0, 2], [3, 4, 0]], transpose()),
+            "local_mirror_1": task([[1, 2, 0], [3, 0, 0]], local_mirror),
+            "local_mirror_2": task([[0, 4, 5], [0, 6, 0]], local_mirror),
         }),
         ("stage_2", {
-            "triple_t_1": task([[1, 2, 0], [3, 0, 0]], triple_t),
-            "triple_t_2": task([[0, 4, 5], [0, 6, 0]], triple_t),
-            "triple_v_1": task([[0, 2, 3], [0, 2, 2], [0, 2, 1]], triple_v),
-            "triple_v_2": task([[1, 1, 0], [1, 0, 0], [2, 2, 0]], triple_v),
+            "branch_a_1": task([[1, 0, 2], [3, 4, 0], [5, 6, 7]], branch_a),
+            "branch_a_2": task([[0, 1, 2, 0], [3, 4, 0, 0], [5, 6, 7, 8], [0, 0, 0, 9]], branch_a),
+            "branch_b_1": task([[1, 2, 3], [4, 5, 6], [7, 8, 9]], branch_b),
+            "branch_b_2": task([[1, 0, 2], [3, 4, 0], [5, 6, 7]], branch_b),
         }),
         ("stage_3", {
-            "quad_t_1": task([[3, 0, 2, 3], [3, 2, 3, 2]], quad_t),
-            "quad_t_2": task([[2, 3, 0], [0, 0, 0], [1, 1, 0]], quad_t),
-            "quad_v_1": task([[3, 0, 0], [2, 3, 0], [2, 2, 0]], quad_v),
-            "quad_v_2": task([[0, 3, 0], [0, 3, 1], [0, 3, 3]], quad_v),
+            "mix_left_1": task([[1, 0, 2], [3, 4, 0], [5, 6, 7]], mix_left),
+            "mix_left_2": task([[1, 2, 3], [4, 5, 6], [7, 8, 9]], mix_left),
+            "mix_last_1": task([[1, 2, 0], [3, 0, 0], [4, 5, 6]], mix_last),
+            "mix_last_2": task([[0, 1, 2, 0], [3, 4, 0, 0], [5, 6, 7, 8], [0, 0, 0, 9]], mix_last),
         }),
         ("stage_4", {
-            "quint_t_1": task([[3, 0, 2, 3], [3, 2, 3, 2]], quint_t),
-            "quint_t_2": task([[1, 2, 0], [3, 4, 0], [5, 0, 0]], quint_t),
-            "quint_v_1": task([[2, 3, 0], [0, 0, 0], [1, 1, 0]], quint_v),
-            "quint_v_2": task([[0, 2, 0], [3, 1, 0], [3, 3, 0]], quint_v),
+            "mix_top_1": task([[1, 2, 3], [4, 5, 6], [7, 8, 9]], mix_top),
+            "mix_top_2": task([[0, 1, 2, 0], [3, 4, 0, 0], [5, 6, 7, 8], [0, 0, 0, 9]], mix_top),
+            "mix_left_3": task([[0, 1, 2], [3, 4, 0], [5, 6, 7]], mix_left),
+            "mix_last_3": task([[1, 0, 2], [3, 4, 0], [5, 6, 7]], mix_last),
         }),
     ]
 
 
 def synthetic_choice() -> dict[str, Task]:
-    pair = Focus(PrimRef("nonzero"), H_MIRROR)
-    triple_t = Pipe(pair, TRANSPOSE)
-    triple_v = Pipe(V_MIRROR, pair)
-    quad_t = Focus(PrimRef("nonzero"), triple_t)
-    quad_v = Pipe(triple_v, TRANSPOSE)
-    quint_t = Pipe(quad_t, TRANSPOSE)
-    quint_v = Pipe(quad_v, V_MIRROR)
+    local_mirror = Focus(support(), mirror_h())
+    branch_a = Select(diagonal(), local_mirror, IDENTITY)
+    branch_b = Select(Eq(Row(), ZERO), transpose(), IDENTITY)
+    mix_left = Select(Eq(Col(), ZERO), branch_b, branch_a)
+    mix_last = Select(last_row(), branch_b, branch_a)
     return {
-        "choice_quad_t": task([[1, 2, 0], [3, 4, 0], [5, 0, 0]], quad_t),
-        "choice_quad_v": task([[0, 3, 0], [0, 3, 1], [0, 3, 3]], quad_v),
-        "choice_quint_t": task([[3, 0, 2, 3], [3, 2, 3, 2]], quint_t),
-        "choice_quint_v": task([[2, 3, 0], [0, 0, 0], [1, 1, 0]], quint_v),
+        "choice_left_1": task([[1, 0, 2], [3, 4, 0], [5, 6, 7]], mix_left),
+        "choice_left_2": task([[1, 2, 3], [4, 5, 6], [7, 8, 9]], mix_left),
+        "choice_last_1": task([[1, 2, 0], [3, 0, 0], [4, 5, 6]], mix_last),
+        "choice_last_2": task([[0, 1, 2, 0], [3, 4, 0, 0], [5, 6, 7, 8], [0, 0, 0, 9]], mix_last),
     }
 
 
 def run_synthetic() -> None:
     library: Library = {}
     for stage, tasks in synthetic_stages():
-        library = learn(f"synthetic {stage}", tasks, rounds=1, library=library)
-    learn("synthetic choice", synthetic_choice(), rounds=1, library=library, freeze=True)
+        library = learn(f"synthetic {stage}", tasks, rounds=1, library=library, config=SYNTHETIC_CONFIG)
+        solved, mean = evaluate_tasks(tasks, library, SYNTHETIC_CONFIG)
+        ablated, _ = evaluate_tasks(tasks, {}, SYNTHETIC_CONFIG)
+        print(f"{stage} summary: {solved}/{len(tasks)} solved, mean {mean:.3f}, ablation_breaks {solved - ablated}")
+    learn("synthetic choice", synthetic_choice(), rounds=1, library=library, freeze=True, config=SYNTHETIC_CONFIG)
 
 
 def arc_root() -> Path:
@@ -112,4 +142,23 @@ def load_arc_split(split: str) -> dict[str, Task]:
 
 
 def run_arc() -> None:
-    learn("arc train", load_arc_split("training"), load_arc_split("evaluation"))
+    learn("arc train", load_arc_split("training"), load_arc_split("evaluation"), config=ARC_CONFIG)
+
+
+def observation_note(task_id: str) -> str:
+    path = Path(__file__).resolve().parent / "OBSERVATIONS.md"
+    lines = [line.rstrip() for line in path.read_text().splitlines() if task_id in line]
+    return "\n".join(lines) if lines else "(no observation note yet)"
+
+
+def run_inspect(task_id: str) -> None:
+    training = load_arc_split("training")
+    evaluation = load_arc_split("evaluation")
+    task = training.get(task_id) or evaluation.get(task_id)
+    if task is None:
+        raise SystemExit(f"unknown ARC task: {task_id}")
+    subset = dict(list(training.items())[:64])
+    library = learn("arc inspect build", subset, rounds=1, quiet=True, config=ARC_CONFIG)
+    print(inspect_task(task_id, task, library, ARC_CONFIG))
+    print("observation note:")
+    print(observation_note(task_id))

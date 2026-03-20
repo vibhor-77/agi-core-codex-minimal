@@ -47,6 +47,8 @@ That suggests a better substrate than naming those operations directly.
   - read cell / write cell
   - copy / compose
 
+The current code mirrors that direction with `IntExpr`, `MaskExpr`, and `GridExpr`.
+
 Higher-level operations should ideally be discovered:
 
 - mirror / transpose / rotate from coordinate remaps
