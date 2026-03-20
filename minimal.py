@@ -97,6 +97,7 @@ def mutate(p, parts, selectors):
     return out
 
 def spawn(library, fronts, width=8, max_size=9):
+    names = tuple(library)
     frontier_programs = unique([p for items in fronts.values() for _, p in items if kind(p) == "grid"])
     library_programs = [e["program"] for e in sorted(library.values(), key=lambda e: (-(len(e["covers"]) + len(e["helps"])), -len(e["covers"]), -e["critical"], -e["impact"], -e["reuse"], -e["support"], -e["gain"], e["age"], size(e["program"]), show(e["program"]))) if kind(e["program"]) == "grid"]
     evolvers = unique(library_programs[:width] + frontier_programs[:width])
@@ -113,7 +114,7 @@ def spawn(library, fronts, width=8, max_size=9):
     for a in parts[:width]:
         for b in parts[:width]:
             if show(a) != show(b): pool.append(("chain", a, b))
-    return [p for p in unique(pool) if kind(p) == "grid" and size(p) <= max_size]
+    return [p for p in unique(pool) if kind(p) == "grid" and cost(p, names) <= max_size]
 
 def frontier(task, pool, keep=3, old=(), library=()):
     ranked = sorted(((score(p, task["train"]), p) for p in unique(list(old) + pool)), key=lambda item: (-item[0], cost(item[1], library), size(item[1]), show(item[1])))
