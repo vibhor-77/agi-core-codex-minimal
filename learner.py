@@ -15,6 +15,7 @@ from language import (
     cost,
     input_kind,
     output_kind,
+    remap_family,
     render,
     score,
     signature,
@@ -45,7 +46,12 @@ Frontier = dict[str, list[tuple[float, Program]]]
 
 
 def seed_programs(kind: Kind) -> list[Program]:
-    return [PrimRef(name) for name, prim in PRIMITIVES.items() if prim.output_kind == kind]
+    """True primitives plus a tiny family of discoverable coordinate remaps."""
+
+    base = [PrimRef(name) for name, prim in PRIMITIVES.items() if prim.output_kind == kind]
+    if kind == "grid":
+        return base + remap_family()
+    return base
 
 
 def sample_inputs(tasks: dict[str, Task], limit: int = 8) -> list[Grid]:
@@ -121,7 +127,7 @@ def choose_frontier(task: Task, pool: list[Program], prior: list[Program], learn
 
 
 def promote(library: Library, improved: dict[str, list[tuple[float, Program]]], sample_grids: list[Grid], cap: int = 12) -> tuple[Library, list[str]]:
-    seen = {signature(PrimRef(name), sample_grids) for name in PRIMITIVES}
+    seen = {signature(program, sample_grids) for program in seed_programs("grid") + seed_programs("mask")}
     seen |= {signature(entry.program, sample_grids) for entry in library.values()}
     candidates: dict[str, Abstraction] = {}
 

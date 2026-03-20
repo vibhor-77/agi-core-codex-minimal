@@ -6,8 +6,15 @@ import json
 import os
 from pathlib import Path
 
-from language import Focus, Pipe, PrimRef, evaluate
+from language import Focus, Pipe, PrimRef, Remap, evaluate
 from learner import Library, Task, learn
+
+
+# Synthetic targets can name these remaps for readability even though the
+# learner only sees them as coordinate formulas.
+H_MIRROR = Remap("row", "width-1-col")
+V_MIRROR = Remap("height-1-row", "col")
+TRANSPOSE = Remap("col", "row")
 
 
 def task(grid, program) -> Task:
@@ -16,17 +23,17 @@ def task(grid, program) -> Task:
 
 
 def synthetic_stages() -> list[tuple[str, dict[str, Task]]]:
-    pair = Focus(PrimRef("nonzero"), PrimRef("reverse_cols"))
-    triple_t = Pipe(pair, PrimRef("swap_axes"))
-    triple_v = Pipe(PrimRef("reverse_rows"), pair)
+    pair = Focus(PrimRef("nonzero"), H_MIRROR)
+    triple_t = Pipe(pair, TRANSPOSE)
+    triple_v = Pipe(V_MIRROR, pair)
     quad_t = Focus(PrimRef("nonzero"), triple_t)
-    quad_v = Pipe(triple_v, PrimRef("swap_axes"))
-    quint_t = Pipe(quad_t, PrimRef("swap_axes"))
-    quint_v = Pipe(quad_v, PrimRef("reverse_rows"))
+    quad_v = Pipe(triple_v, TRANSPOSE)
+    quint_t = Pipe(quad_t, TRANSPOSE)
+    quint_v = Pipe(quad_v, V_MIRROR)
     return [
         ("stage_1", {
-            "reverse_cols": task([[1, 0], [0, 0]], PrimRef("reverse_cols")),
-            "swap_axes": task([[1, 0], [2, 3]], PrimRef("swap_axes")),
+            "mirror_h": task([[1, 2, 0], [3, 0, 4]], H_MIRROR),
+            "transpose": task([[1, 0, 2], [3, 4, 0]], TRANSPOSE),
             "pair_1": task([[1, 2, 0], [3, 0, 0]], pair),
             "pair_2": task([[0, 4, 5], [0, 6, 0]], pair),
         }),
@@ -52,13 +59,13 @@ def synthetic_stages() -> list[tuple[str, dict[str, Task]]]:
 
 
 def synthetic_choice() -> dict[str, Task]:
-    pair = Focus(PrimRef("nonzero"), PrimRef("reverse_cols"))
-    triple_t = Pipe(pair, PrimRef("swap_axes"))
-    triple_v = Pipe(PrimRef("reverse_rows"), pair)
+    pair = Focus(PrimRef("nonzero"), H_MIRROR)
+    triple_t = Pipe(pair, TRANSPOSE)
+    triple_v = Pipe(V_MIRROR, pair)
     quad_t = Focus(PrimRef("nonzero"), triple_t)
-    quad_v = Pipe(triple_v, PrimRef("swap_axes"))
-    quint_t = Pipe(quad_t, PrimRef("swap_axes"))
-    quint_v = Pipe(quad_v, PrimRef("reverse_rows"))
+    quad_v = Pipe(triple_v, TRANSPOSE)
+    quint_t = Pipe(quad_t, TRANSPOSE)
+    quint_v = Pipe(quad_v, V_MIRROR)
     return {
         "choice_quad_t": task([[1, 2, 0], [3, 4, 0], [5, 0, 0]], quad_t),
         "choice_quad_v": task([[0, 3, 0], [0, 3, 1], [0, 3, 3]], quad_v),
