@@ -1,6 +1,8 @@
 import itertools, json, os, sys
 from pathlib import Path
 
+"""Minimal 4-pillar loop: explore candidates, score near-misses, promote recurring pairs, repeat."""
+
 def crop_support(grid):
     cells = [(i, j) for i, row in enumerate(grid) for j, v in enumerate(row) if v]
     if not cells: return [[0]]
@@ -14,6 +16,7 @@ SEEDS = {
     "transpose": lambda g: [list(row) for row in zip(*g)],
     "crop_support": crop_support,
 }
+PROBES = [[[1, 0], [0, 2]], [[0, 1, 0], [2, 0, 0]]]
 
 def run(program, grid, primitives):
     for name in program: grid = primitives[name](grid)
@@ -27,9 +30,13 @@ def quality(program, examples, primitives):
         return sum(a == b for ra, rb in zip(pred, out) for a, b in zip(ra, rb)) / total
     return sum(cell_score(inp, out) for inp, out in examples) / len(examples)
 
-def candidates(primitives, depth=2):
-    names = list(primitives)
+def candidates(primitives, usefulness, depth=2):
+    names = sorted(primitives, key=lambda name: (-usefulness.get(name, 1.0), name))
     for d in range(1, depth + 1): yield from itertools.product(names, repeat=d)
+
+def novel(pair, primitives):
+    outputs = [run(pair, probe, primitives) for probe in PROBES]
+    return all(outputs != [run((name,), probe, primitives) for probe in PROBES] for name in primitives)
 
 def abstract(frontier, primitives, threshold=1.5):
     weights = {}
@@ -40,28 +47,35 @@ def abstract(frontier, primitives, threshold=1.5):
     new = []
     for pair, weight in weights.items():
         name = "+".join(pair)
-        if weight >= threshold and name not in primitives:
+        if weight >= threshold and name not in primitives and novel(pair, primitives):
             primitives[name] = lambda g, p=pair: run(p, g, primitives)
-            new.append(name)
+            new.append((name, weight))
     return new
 
-def learn(name, tasks, rounds=2):
-    primitives, frontier = SEEDS.copy(), {}
+def learn(label, tasks, rounds=2):
+    primitives, usefulness, frontier = SEEDS.copy(), {name: 1.0 for name in SEEDS}, {}
     for round_number in range(1, rounds + 1):
         improved = []
         for task_id, examples in tasks.items():
-            program = min(candidates(primitives), key=lambda p: (-quality(p, examples, primitives), len(p), p))
+            program = min(
+                candidates(primitives, usefulness),
+                key=lambda p: (-quality(p, examples, primitives), -sum(usefulness.get(op, 1.0) for op in p), len(p), p),
+            )
             score = quality(program, examples, primitives)
             if task_id not in frontier or score > frontier[task_id][0]:
                 frontier[task_id] = (score, program)
                 improved.append(task_id)
+        for task_id in improved:
+            score, program = frontier[task_id]
+            for op in program: usefulness[op] = usefulness.get(op, 1.0) + score
         new = abstract(frontier, primitives)
+        for primitive_name, weight in new: usefulness[primitive_name] = weight
         solved = sorted(task_id for task_id, (score, _) in frontier.items() if score == 1.0)
         near = sum(0 < score < 1 for score, _ in frontier.values())
-        print(f"{name} round {round_number}: {len(solved)}/{len(tasks)} solved, {near} near-misses")
+        print(f"{label} round {round_number}: {len(solved)}/{len(tasks)} solved, {near} near-misses")
         print("improved:", improved)
-        print("new primitives:", new)
-        print("library:", [name for name in primitives if name not in SEEDS])
+        print("new primitives:", [primitive_name for primitive_name, _ in new])
+        print("library:", [primitive_name for primitive_name in primitives if primitive_name not in SEEDS])
 
 def make_task(grid, program):
     return [(grid, run(program, grid, SEEDS))]

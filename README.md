@@ -1,5 +1,5 @@
 # agi-core-codex-minimal
-Tiny 4-pillar scaffolding: feedback scores every attempt, approximability keeps the best near-miss per task, abstraction promotes recurring length-2 subprograms, and exploration searches compositions of the current primitive set.
+Tiny 4-pillar scaffolding: feedback scores every attempt, approximability keeps the best near-miss per task, abstraction promotes recurring length-2 subprograms, and exploration searches compositions in a deterministic usefulness order learned from the frontier.
 ARC expects training JSONs at `ARC_AGI_1_TRAIN_DIR`, `data/ARC-AGI/data/training`, or `../agi-core/data/ARC-AGI/data/training`.
 Run:
 - `python minimal.py synthetic`
