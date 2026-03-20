@@ -57,6 +57,22 @@ Higher-level operations should ideally be discovered:
 - local rewrite from `mask -> select -> write back`
 - repetition / projection / packing from repeated use of the same low-level operations
 
+Many tasks also require value-level distinctions that `nonzero` alone cannot express.
+Examples:
+
+- `794b24be`: the occupied cell projects upward but changes from `1` to `2`
+- `d4f3cd78`: an enclosure interior is filled with `8` rather than copied from an existing nonzero cell
+- `b27ca6d3`: a sparse configuration of `2` cells induces a new frame of `3`
+
+That suggests the substrate also needs low-level cell-symbol access:
+
+- read cell value at a coordinate
+- compare a cell value to a symbol
+- paint a symbol back onto a grid
+
+These are still primitive in the same sense as characters or integers in a programming language.
+They let color-specific behavior emerge without seeding named ARC tactics.
+
 ## Why This Matters
 
 If the substrate is too high-level, progress can come from hand-seeded human concepts.

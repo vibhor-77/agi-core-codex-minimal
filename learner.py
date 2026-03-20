@@ -17,7 +17,14 @@ from language import (
     MaskExpr,
     Not,
     Or,
+    Paint,
+    Read,
+    Row,
+    Col,
     Select,
+    ValueConst,
+    ValueEq,
+    ValueExpr,
     cost,
     evaluate,
     grid_seeds,
@@ -27,6 +34,7 @@ from language import (
     score,
     signature,
     unique,
+    value_seeds,
     walk,
 )
 
@@ -75,6 +83,11 @@ def sample_inputs(tasks: dict[str, Task], limit: int = 8) -> list[Grid]:
     return grids
 
 
+def task_colors(task: Task, limit: int = 4) -> list[int]:
+    colors = sorted({cell for inp, _ in task.train for row in inp for cell in row if cell})
+    return colors[:limit]
+
+
 def top_frontier(fronts: Frontier, target: Kind) -> list[Expr]:
     return unique([
         program
@@ -88,29 +101,44 @@ def top_frontier(fronts: Frontier, target: Kind) -> list[Expr]:
 def seed_exprs(target: Kind) -> list[Expr]:
     if target == "grid":
         return grid_seeds()
+    if target == "value":
+        return value_seeds()
     if target == "mask":
         return mask_seeds()
     return []
 
 
+def explore_values(library: Library, fronts: Frontier, config: SearchConfig) -> list[ValueExpr]:
+    seeds = [expr for expr in seed_exprs("value") if kind(expr) == "value"]
+    learned = [item.expr for item in library.values() if kind(item.expr) == "value"]
+    frontier = top_frontier(fronts, "value")
+    values = [expr for expr in unique(learned + frontier + seeds) if isinstance(expr, (ValueConst, Read))]
+    return values[:config.grid_limit]  # type: ignore[return-value]
+
+
 def explore_masks(library: Library, fronts: Frontier, config: SearchConfig) -> list[MaskExpr]:
+    values = explore_values(library, fronts, config)
     seeds = [expr for expr in seed_exprs("mask") if isinstance(expr, (Eq, And, Or, Not)) or kind(expr) == "mask"]
     learned = [item.expr for item in library.values() if kind(item.expr) == "mask"]
     frontier = top_frontier(fronts, "mask")
     base = [expr for expr in unique(learned + frontier + seeds) if kind(expr) == "mask"]
-    masks = unique(base + [Not(mask) for mask in base])
-    masks += [op(left, right) for op in (And, Or) for left in base[:6] for right in base[:6] if render(left) < render(right)]
+    value_eqs = [ValueEq(left, right) for left in values[:10] for right in values[:10] if render(left) < render(right)]
+    atoms = unique(base + value_eqs)
+    masks = unique(atoms + [Not(mask) for mask in atoms])
+    masks += [op(left, right) for op in (And, Or) for left in atoms[:6] for right in atoms[:6] if render(left) < render(right)]
     return [expr for expr in unique(masks) if kind(expr) == "mask"][:config.mask_limit]  # type: ignore[return-value]
 
 
 def explore_grids(library: Library, fronts: Frontier, masks: list[MaskExpr], config: SearchConfig) -> list[GridExpr]:
     learned_names = set(library)
+    values = explore_values(library, fronts, config)
     seeds = [expr for expr in seed_exprs("grid") if kind(expr) == "grid"]
     learned_exprs = [item.expr for item in library.values() if kind(item.expr) == "grid"]
     frontier = top_frontier(fronts, "grid")
     base = unique(learned_exprs + frontier + seeds)
     transforms = base[:config.grid_limit]
     steps = unique(learned_exprs + seeds)[:config.step_limit]
+    paints = [Paint(value) for value in values[:10]]
 
     composed = [Compose(left, right) for left in transforms[:config.compose_left_limit] for right in steps if render(right) != "identity"]
     focused = [Focus(mask, grid) for mask in masks[:config.mask_limit] for grid in transforms if render(grid) != "identity"]
@@ -125,7 +153,14 @@ def explore_grids(library: Library, fronts: Frontier, masks: list[MaskExpr], con
         for grid in transforms
         if render(grid) != "identity"
     ]
-    pool = unique(transforms + composed + focused + selected)
+    selected += [
+        Select(mask, paint, IDENTITY)
+        for mask in masks[:config.mask_limit]
+        for paint in paints
+        if render(paint) != "paint(0)"
+    ]
+    focused += [Focus(mask, paint) for mask in masks[:config.mask_limit] for paint in paints if render(paint) != "paint(0)"]
+    pool = unique(transforms + paints + composed + focused + selected)
     return [expr for expr in pool if cost(expr, learned_names) <= config.max_cost]  # type: ignore[return-value]
 
 
@@ -134,10 +169,36 @@ def explore(library: Library, fronts: Frontier, config: SearchConfig) -> list[Gr
     return explore_grids(library, fronts, masks, config)
 
 
-def choose_frontier(task: Task, pool: list[GridExpr], prior: list[GridExpr], learned: set[str], keep: int) -> list[tuple[float, GridExpr]]:
+def choose_frontier(
+    task: Task,
+    pool: list[GridExpr],
+    prior: list[GridExpr],
+    learned: set[str],
+    keep: int,
+    config: SearchConfig,
+) -> list[tuple[float, GridExpr]]:
+    colors = task_colors(task)
+    color_masks = [ValueEq(Read(IDENTITY, Row(), Col()), ValueConst(color)) for color in colors]
+    color_paints = [Paint(ValueConst(color)) for color in colors]
+    local_grids = unique(prior + pool)[:6]
+    task_specific = [
+        Select(mask, paint, IDENTITY)
+        for mask in color_masks
+        for paint in color_paints
+    ] + [
+        Select(mask, grid, IDENTITY)
+        for mask in color_masks
+        for grid in local_grids
+        if render(grid) != "identity"
+    ] + [
+        Focus(mask, grid)
+        for mask in color_masks
+        for grid in local_grids[:4]
+        if render(grid) != "identity"
+    ]
     inputs = [inp for inp, _ in task.train]
     ranked = sorted(
-        ((score(expr, task.train), expr) for expr in unique(prior + pool)),
+        ((score(expr, task.train), expr) for expr in unique(prior + pool + task_specific) if cost(expr, learned) <= config.max_cost),
         key=lambda item: (-item[0], cost(item[1], learned), render(item[1])),
     )
     chosen: list[tuple[float, GridExpr]] = []
@@ -154,7 +215,7 @@ def choose_frontier(task: Task, pool: list[GridExpr], prior: list[GridExpr], lea
 
 
 def prune_library(library: Library, sample_grids: list[Grid], cap: int = 12) -> Library:
-    seen = {signature(expr, sample_grids) for expr in seed_exprs("grid") + seed_exprs("mask")}
+    seen = {signature(expr, sample_grids) for expr in seed_exprs("grid") + seed_exprs("mask") + seed_exprs("value")}
     kept: list[Abstraction] = []
     ranked = sorted(
         library.values(),
@@ -173,14 +234,22 @@ def prune_library(library: Library, sample_grids: list[Grid], cap: int = 12) -> 
 
 def promote(library: Library, improved: dict[str, tuple[float, GridExpr]], sample_grids: list[Grid]) -> tuple[Library, list[str]]:
     candidates: dict[str, Abstraction] = {}
+    seed_values = {render(expr) for expr in seed_exprs("value")}
     for task_id, (delta, winner) in improved.items():
         if delta <= 0:
             continue
         for piece in walk(winner):
             piece_kind = kind(piece)
-            if piece_kind == "int" or render(piece) == "identity":
+            name = render(piece)
+            if (
+                piece_kind == "int"
+                or piece_kind == "value" and name in seed_values
+                or isinstance(piece, Paint) and name == "paint(0)"
+                or name == "identity"
+                or cost(piece) < 3
+            ):
                 continue
-            item = candidates.setdefault(render(piece), Abstraction(expr=piece))
+            item = candidates.setdefault(name, Abstraction(expr=piece))
             item.support += 1
             item.gain += delta
             item.exact += delta == 1.0
@@ -219,7 +288,7 @@ def evaluate_tasks(tasks: dict[str, Task], library: Library | None = None, confi
     pool = explore(library, {}, config)
     exact = mean = 0.0
     for task in tasks.values():
-        best = choose_frontier(task, pool, [], set(library), keep=1)[0][1]
+        best = choose_frontier(task, pool, [], set(library), keep=1, config=config)[0][1]
         value = score(best, task.test)
         exact += value == 1.0
         mean += value
@@ -229,7 +298,7 @@ def evaluate_tasks(tasks: dict[str, Task], library: Library | None = None, confi
 def best_program(task: Task, library: Library | None = None, config: SearchConfig = ARC_CONFIG) -> tuple[float, GridExpr]:
     library = {} if library is None else library
     pool = explore(library, {}, config)
-    return choose_frontier(task, pool, [], set(library), keep=1)[0]
+    return choose_frontier(task, pool, [], set(library), keep=1, config=config)[0]
 
 
 def inspect_task(task_id: str, task: Task, library: Library | None = None, config: SearchConfig = ARC_CONFIG) -> str:
@@ -275,7 +344,7 @@ def learn(
         for task_id, task in tasks.items():
             previous = fronts.get(task_id, [(0.0, IDENTITY)])[0][0]
             old_programs = [expr for _, expr in fronts.get(task_id, [])]
-            fronts[task_id] = choose_frontier(task, pool, old_programs, prior, keep=config.frontier_keep)
+            fronts[task_id] = choose_frontier(task, pool, old_programs, prior, keep=config.frontier_keep, config=config)
             best_quality, best_expr = fronts[task_id][0]
             if best_quality > previous:
                 improved[task_id] = (best_quality - previous, best_expr)
