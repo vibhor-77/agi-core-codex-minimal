@@ -7,17 +7,51 @@ def flip_h(g): return [r[::-1] for r in g]
 def flip_v(g): return g[::-1]
 def transpose(g): return [list(r) for r in zip(*g)]
 def nonzero_mask(g): return [[1 if v else 0 for v in r] for r in g]
-PRIMS = {"identity": lambda g: g, "flip_h": flip_h, "flip_v": flip_v, "transpose": transpose, "nonzero_mask": nonzero_mask}
+GRID = {"identity": lambda g: g, "flip_h": flip_h, "flip_v": flip_v, "transpose": transpose}
+MASK = {"nonzero_mask": nonzero_mask}
+PRIMS = GRID | MASK
+
+def kind(p):
+    if isinstance(p, str): return "mask" if p in MASK else "grid"
+    return "grid" if p[0] in {"chain", "local"} else None
+
+def box(mask):
+    cells = [(i, j) for i, row in enumerate(mask) for j, v in enumerate(row) if v]
+    if not cells: return None
+    rows, cols = zip(*cells)
+    return min(rows), max(rows) + 1, min(cols), max(cols) + 1
+
+def crop(g, b):
+    r0, r1, c0, c1 = b
+    return [row[c0:c1] for row in g[r0:r1]]
+
+def fit(g, h, w):
+    return [[g[i][j] if i < len(g) and j < len(g[0]) else 0 for j in range(w)] for i in range(h)]
+
+def paste(base, patch, b):
+    r0, r1, c0, c1 = b
+    out = [row[:] for row in base]
+    for i in range(r1 - r0):
+        for j in range(c1 - c0):
+            out[r0 + i][c0 + j] = patch[i][j]
+    return out
 
 def run(p, g):
-    return PRIMS[p](g) if isinstance(p, str) else run(p[2], run(p[1], g))
+    if isinstance(p, str): return PRIMS[p](g)
+    if p[0] == "chain": return run(p[2], run(p[1], g))
+    mask = run(p[1], g)
+    b = box(mask)
+    if not b: return g
+    patch = run(p[2], crop(g, b))
+    return paste(g, fit(patch, b[1] - b[0], b[3] - b[2]), b)
 
-def show(p): return p if isinstance(p, str) else f"chain({show(p[1])}, {show(p[2])})"
+def show(p): return p if isinstance(p, str) else f"{p[0]}({show(p[1])}, {show(p[2])})"
 def size(p): return 1 if isinstance(p, str) else 1 + size(p[1]) + size(p[2])
 def subtrees(p): return [] if isinstance(p, str) else [p, *subtrees(p[1]), *subtrees(p[2])]
 def pieces(p): return [p, *subtrees(p)]
 
 def score(p, examples):
+    if kind(p) != "grid": return 0.0
     total = hits = 0
     for inp, out in examples:
         got = run(p, inp)
@@ -43,18 +77,20 @@ def uses_library(p, names):
     return any(size(t) > 1 and show(t) in known for t in pieces(p))
 
 def spawn(library, fronts, width=8, max_size=9):
-    frontier_programs = unique([p for items in fronts.values() for _, p in items])
-    library_programs = [e["program"] for e in sorted(library.values(), key=lambda e: (-e["reuse"], -e["support"], -e["gain"], e["age"], size(e["program"]), show(e["program"])))]
+    frontier_programs = unique([p for items in fronts.values() for _, p in items if kind(p) == "grid"])
+    library_programs = [e["program"] for e in sorted(library.values(), key=lambda e: (-e["reuse"], -e["support"], -e["gain"], e["age"], size(e["program"]), show(e["program"]))) if kind(e["program"]) == "grid"]
     evolvers = unique(library_programs[:width] + frontier_programs[:width])
-    parts = unique(list(PRIMS) + [t for p in evolvers for t in pieces(p)])[: width * 3]
-    pool = list(PRIMS) + evolvers
+    selectors = unique(list(MASK) + [t for p in evolvers for t in pieces(p) if kind(t) == "mask"])[:2]
+    locals_ = [("local", s, t) for s in selectors for t in unique(list(GRID) + evolvers)[:width] if show(t) != "identity"]
+    parts = unique([t for p in list(GRID) + evolvers + locals_ for t in pieces(p) if kind(t) == "grid"])[: width * 3]
+    pool = list(GRID) + evolvers + locals_
     for p in evolvers:
-        for q in PRIMS:
+        for q in GRID:
             pool += [("chain", q, p), ("chain", p, q)]
     for a in parts[:width]:
         for b in parts[:width]:
             if show(a) != show(b): pool.append(("chain", a, b))
-    return [p for p in unique(pool) if size(p) <= max_size]
+    return [p for p in unique(pool) if kind(p) == "grid" and size(p) <= max_size]
 
 def frontier(task, pool, keep=3, old=()):
     ranked = sorted(((score(p, task["train"]), p) for p in unique(list(old) + pool)), key=lambda item: (-item[0], size(item[1]), show(item[1])))
@@ -177,34 +213,28 @@ def task(grid, program):
     return {"train": [(grid, out)], "test": [(grid, out)]}
 
 def synthetic_stages():
-    pair = ("chain", "flip_h", "nonzero_mask")
+    pair = ("local", "nonzero_mask", "flip_h")
     triple = ("chain", pair, "transpose")
-    quad_a = ("chain", "flip_v", triple)
-    quad_b = ("chain", triple, "flip_h")
-    quint_a = ("chain", quad_a, "flip_h")
-    quint_b = ("chain", "transpose", quad_b)
+    quad = ("chain", triple, "flip_h")
+    quint = ("local", "nonzero_mask", quad)
     return [
         ("stage_1", {
             "flip_h": task([[1, 0], [0, 0]], "flip_h"),
-            "mask": task([[1, 2, 0], [0, 0, 3]], "nonzero_mask"),
-            "pair_1": task([[1, 0, 0], [2, 3, 0]], pair),
-            "pair_2": task([[0, 4, 5], [6, 0, 0]], pair),
+            "transpose": task([[1, 0], [2, 3]], "transpose"),
+            "pair_1": task([[1, 2, 0], [3, 0, 0]], pair),
+            "pair_2": task([[0, 4, 5], [0, 6, 0]], pair),
         }),
         ("stage_2", {
-            "triple_1": task([[1, 0, 0], [0, 2, 3]], triple),
-            "triple_2": task([[2, 0, 0], [0, 1, 4]], triple),
+            "triple_1": task([[1, 2, 0], [3, 0, 0]], triple),
+            "triple_2": task([[0, 4, 5], [0, 6, 0]], triple),
         }),
         ("stage_3", {
-            "quad_a_1": task([[0, 0, 0], [0, 0, 1]], quad_a),
-            "quad_a_2": task([[0, 0, 0], [0, 1, 2]], quad_a),
-            "quad_b_1": task([[1, 0, 0], [0, 2, 3]], quad_b),
-            "quad_b_2": task([[0, 5, 0], [6, 0, 7]], quad_b),
+            "quad_1": task([[3, 0, 2, 3], [3, 2, 3, 2]], quad),
+            "quad_2": task([[3, 0, 0], [2, 3, 0], [2, 2, 0]], quad),
         }),
         ("stage_4", {
-            "quint_a_1": task([[0, 0, 0], [0, 0, 2]], quint_a),
-            "quint_a_2": task([[0, 0, 0], [0, 1, 3]], quint_a),
-            "quint_b_1": task([[1, 0, 0], [0, 2, 3]], quint_b),
-            "quint_b_2": task([[2, 0, 0], [0, 1, 4]], quint_b),
+            "quint_1": task([[1, 3, 3, 1], [2, 1, 1, 3], [3, 2, 1, 2]], quint),
+            "quint_2": task([[2, 3, 1, 0], [2, 3, 1, 2]], quint),
         }),
     ]
 
