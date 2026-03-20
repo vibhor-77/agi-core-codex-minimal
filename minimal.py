@@ -40,21 +40,21 @@ def explore(library, round_number):
             seen.add(learned + seed)
     return sorted(seen, key=lambda program: (len(program), program))
 
-def best_program(task, candidates):
-    return min(candidates, key=lambda program: (-evaluate(program, task)[0], -evaluate(program, task)[1], len(program), program))
-
 def learn(name, tasks, rounds=2):
-    library, seen = [], set()
+    library, frontier = [], {}
     for round_number in range(1, rounds + 1):
-        solved = {task_id: best_program(task, explore(library, round_number)) for task_id, task in tasks.items()}
-        winners = {task_id: program for task_id, program in solved.items() if evaluate(program, tasks[task_id])[0]}
-        new = sorted(task_id for task_id in winners if task_id not in seen)
-        seen.update(winners)
-        for task_id in new:
-            program = winners[task_id]
-            if program not in library: library.append(program)
-        print(f"{name} round {round_number}: {len(winners)}/{len(tasks)} solved")
-        print("new:", new)
+        promoted, candidates = [], explore(library, round_number)
+        for task_id, task in tasks.items():
+            program = max(candidates, key=lambda candidate: evaluate(candidate, task))
+            score = evaluate(program, task)
+            if task_id not in frontier or score > frontier[task_id][0]:
+                frontier[task_id] = (score, program)
+                if program not in library: library.append(program)
+                promoted.append(task_id)
+        solved = sorted(task_id for task_id, (score, _) in frontier.items() if score[0])
+        print(f"{name} round {round_number}: {len(solved)}/{len(tasks)} solved")
+        print("promoted:", promoted)
+        print("solved:", solved)
         print("library:", [" -> ".join(program) for program in library])
 
 def make_task(grid, program):
