@@ -1,102 +1,125 @@
-import itertools, json, os, sys
+import json, os, sys
 from pathlib import Path
 
-"""Minimal 4-pillar loop: explore candidates, score near-misses, promote recurring pairs, repeat."""
+"""Minimal 4-pillar loop: score, keep a small frontier, promote useful subtrees, repeat."""
 
-def crop_support(grid):
-    cells = [(i, j) for i, row in enumerate(grid) for j, v in enumerate(row) if v]
-    if not cells: return [[0]]
-    rows, cols = zip(*cells)
-    return [row[min(cols):max(cols) + 1] for row in grid[min(rows):max(rows) + 1]]
+def flip_h(grid): return [row[::-1] for row in grid]
+def flip_v(grid): return grid[::-1]
+def transpose(grid): return [list(row) for row in zip(*grid)]
+def nonzero_mask(grid): return [[1 if value else 0 for value in row] for row in grid]
+def overlay(left, right):
+    if len(left) != len(right) or len(left[0]) != len(right[0]): return []
+    return [[b if b else a for a, b in zip(row_a, row_b)] for row_a, row_b in zip(left, right)]
 
-SEEDS = {
-    "identity": lambda g: g,
-    "flip_h": lambda g: [row[::-1] for row in g],
-    "flip_v": lambda g: g[::-1],
-    "transpose": lambda g: [list(row) for row in zip(*g)],
-    "crop_support": crop_support,
-}
+SEEDS = {"identity": lambda g: g, "flip_h": flip_h, "flip_v": flip_v, "transpose": transpose, "nonzero_mask": nonzero_mask}
 PROBES = [[[1, 0], [0, 2]], [[0, 1, 0], [2, 0, 0]]]
 
-def run(program, grid, primitives):
-    for name in program: grid = primitives[name](grid)
-    return grid
+def run(program, grid, atoms):
+    if isinstance(program, str): return atoms[program](grid)
+    op, left, right = program
+    return run(right, run(left, grid, atoms), atoms) if op == "chain" else overlay(run(left, grid, atoms), run(right, grid, atoms))
 
 def show(program):
-    return " -> ".join(program)
+    if isinstance(program, str): return program
+    op, left, right = program
+    return f"{op}({show(left)}, {show(right)})"
 
-def quality(program, examples, primitives):
+def size(program):
+    if isinstance(program, str): return 1
+    _, left, right = program
+    return 1 + size(left) + size(right)
+
+def leaves(program):
+    if isinstance(program, str): return [program]
+    _, left, right = program
+    return leaves(left) + leaves(right)
+
+def subtrees(program):
+    if isinstance(program, str): return []
+    _, left, right = program
+    return [program, *subtrees(left), *subtrees(right)]
+
+def quality(program, examples, atoms):
     def cell_score(inp, out):
-        pred = run(program, inp, primitives)
-        if len(pred) != len(out) or len(pred[0]) != len(out[0]): return 0.0
+        got = run(program, inp, atoms)
+        if len(got) != len(out) or len(got[0]) != len(out[0]): return 0.0
         total = sum(len(row) for row in out)
-        return sum(a == b for ra, rb in zip(pred, out) for a, b in zip(ra, rb)) / total
+        return sum(a == b for row_a, row_b in zip(got, out) for a, b in zip(row_a, row_b)) / total
     return sum(cell_score(inp, out) for inp, out in examples) / len(examples)
 
-def candidates(primitives, usefulness, depth=2):
-    names = sorted(primitives, key=lambda name: (-usefulness.get(name, 1.0), name))
-    for d in range(1, depth + 1): yield from itertools.product(names, repeat=d)
+def utility(program, usefulness):
+    return sum(usefulness.get(name, 1.0) for name in leaves(program))
 
-def novel(pair, primitives):
-    outputs = [run(pair, probe, primitives) for probe in PROBES]
-    return all(outputs != [run((name,), probe, primitives) for probe in PROBES] for name in primitives)
+def candidates(atoms, usefulness):
+    names = sorted(atoms, key=lambda name: (-usefulness.get(name, 1.0), name))
+    for name in names: yield name
+    for left in names:
+        for right in names:
+            yield ("chain", left, right)
+            yield ("overlay", left, right)
 
-def pair_weights(frontier):
+def frontier_for(examples, atoms, usefulness, keep, old=()):
+    pool = list(old) + list(candidates(atoms, usefulness))
+    ranked = sorted(((quality(program, examples, atoms), program) for program in pool), key=lambda item: (-item[0], size(item[1]), -utility(item[1], usefulness), show(item[1])))
+    chosen, seen = [], set()
+    for score, program in ranked:
+        if show(program) not in seen:
+            chosen.append((score, program)); seen.add(show(program))
+        if len(chosen) == keep: return chosen
+    return chosen
+
+def novel(program, atoms):
+    outputs = [run(program, probe, atoms) for probe in PROBES]
+    return all(outputs != [run(name, probe, atoms) for probe in PROBES] for name in atoms)
+
+def promote(frontier, atoms, threshold=1.5):
     weights = {}
-    for score, program in frontier.values():
-        for i in range(len(program) - 1):
-            pair = program[i:i + 2]
-            weights[pair] = weights.get(pair, 0.0) + score
-    return sorted(weights.items(), key=lambda item: (-item[1], item[0]))
-
-def abstract(frontier, primitives, threshold=1.5):
+    for programs in frontier.values():
+        score, program = programs[0]
+        for subtree in subtrees(program):
+            if size(subtree) > 1:
+                weights[subtree] = weights.get(subtree, 0.0) + score
+    ranked = sorted(weights.items(), key=lambda item: (-item[1], show(item[0])))
     new = []
-    ranked = pair_weights(frontier)
-    for pair, weight in ranked:
-        name = "+".join(pair)
-        if weight >= threshold and name not in primitives and novel(pair, primitives):
-            primitives[name] = lambda g, p=pair: run(p, g, primitives)
+    for program, weight in ranked:
+        name = show(program)
+        if weight >= threshold and name not in atoms and novel(program, atoms):
+            atoms[name] = lambda grid, p=program: run(p, grid, atoms)
             new.append((name, weight))
     return new, ranked
 
-def learn(label, tasks, rounds=2):
-    primitives, usefulness, frontier = SEEDS.copy(), {name: 1.0 for name in SEEDS}, {}
+def learn(label, tasks, rounds=2, keep=3):
+    atoms, usefulness, frontier = SEEDS.copy(), {name: 1.0 for name in SEEDS}, {}
     for round_number in range(1, rounds + 1):
         improved = {}
         for task_id, examples in tasks.items():
-            program = min(
-                candidates(primitives, usefulness),
-                key=lambda p: (-quality(p, examples, primitives), len(p), -sum(usefulness.get(op, 1.0) for op in p), p),
-            )
-            score = quality(program, examples, primitives)
-            if task_id not in frontier or score > frontier[task_id][0]:
-                frontier[task_id] = (score, program)
-                improved[task_id] = (score, program)
-        for task_id in improved:
-            score, program = frontier[task_id]
-            for op in program: usefulness[op] = usefulness.get(op, 1.0) + score
-        new, ranked = abstract(frontier, primitives)
-        for primitive_name, weight in new: usefulness[primitive_name] = weight
-        solved = sorted(task_id for task_id, (score, _) in frontier.items() if score == 1.0)
-        near = sum(0 < score < 1 for score, _ in frontier.values())
-        top_pairs = [f"{show(pair)} ({weight:.2f})" for pair, weight in ranked[:3]]
+            best_before = frontier.get(task_id, [(0.0, "identity")])[0][0]
+            frontier[task_id] = frontier_for(examples, atoms, usefulness, keep, [program for _, program in frontier.get(task_id, [])])
+            if frontier[task_id][0][0] > best_before: improved[task_id] = frontier[task_id][0]
+        for score, program in improved.values():
+            for name in leaves(program): usefulness[name] = usefulness.get(name, 1.0) + score
+        new, ranked = promote(frontier, atoms)
+        for name, weight in new: usefulness[name] = weight
+        solved = sorted(task_id for task_id, programs in frontier.items() if programs[0][0] == 1.0)
+        near = sum(0 < programs[0][0] < 1 for programs in frontier.values())
         print(f"{label} round {round_number}: {len(solved)}/{len(tasks)} solved, {near} near-misses")
         print("improved:", [f"{task_id}: {score:.2f} via {show(program)}" for task_id, (score, program) in improved.items()])
-        print("solved programs:", [f"{task_id}: {show(frontier[task_id][1])}" for task_id in solved])
-        print("new primitives:", [f"{primitive_name} ({weight:.2f})" for primitive_name, weight in new])
-        print("top pair candidates:", top_pairs)
-        print("library:", [primitive_name for primitive_name in primitives if primitive_name not in SEEDS])
+        print("solved programs:", [f"{task_id}: {show(frontier[task_id][0][1])}" for task_id in solved])
+        print("new primitives:", [f"{name} ({weight:.2f})" for name, weight in new])
+        print("top subtree candidates:", [f"{show(program)} ({weight:.2f})" for program, weight in ranked[:3]])
+        print("library:", [name for name in atoms if name not in SEEDS])
 
-def make_task(grid, program):
-    return [(grid, run(program, grid, SEEDS))]
+def task(grid, program): return [(grid, run(program, grid, SEEDS))]
 
 def synthetic_tasks():
-    shared = ("transpose", "flip_v", "flip_h")
+    pair = ("overlay", "flip_h", "nonzero_mask")
     return {
-        "flip_h": make_task([[1, 0], [0, 0]], ("flip_h",)),
-        "transpose": make_task([[0, 0, 2], [0, 0, 0]], ("transpose",)),
-        "hard_1": make_task([[2, 2, 0], [0, 0, 1], [2, 2, 1]], shared),
-        "hard_2": make_task([[1, 1, 0], [0, 0, 1], [1, 1, 2]], shared),
+        "flip_h": task([[1, 0], [0, 0]], "flip_h"),
+        "mask": task([[1, 0, 2], [0, 3, 0], [4, 0, 0]], "nonzero_mask"),
+        "pair_1": task([[1, 0, 0], [0, 2, 3]], pair),
+        "pair_2": task([[0, 4, 5], [6, 0, 0]], pair),
+        "hard_1": task([[1, 2, 0], [0, 0, 3]], ("chain", pair, "flip_h")),
+        "hard_2": task([[1, 0, 2], [3, 0, 0]], ("chain", pair, "transpose")),
     }
 
 def arc_tasks(limit=10):
