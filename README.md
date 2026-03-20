@@ -1,24 +1,32 @@
 # agi-core-codex-minimal
-Tiny 4-pillar scaffolding: feedback scores every attempt, approximability keeps a small diverse frontier per task, abstraction keeps an evolving population of repeated useful subtrees, and exploration breeds new programs from a tiny typed language with whole-grid transforms, one perception primitive, and one local writeback operator.
-ARC expects JSONs at `ARC_AGI_1_TRAIN_DIR`, `data/ARC-AGI/data/training`, or `../agi-core/data/ARC-AGI/data/training`, and scores the matching public eval split at fixed milestones without learning from it.
-Run:
+
+A small, readable scaffold for the 4 pillars:
+- feedback: score every attempt on the task examples
+- approximability: keep the best frontier, even when it is imperfect
+- abstraction/composition: promote repeated useful subtrees into a learned population
+- exploration: search new programs by composing primitives with learned abstractions
+
+## Files
+- [minimal.py](/Users/vibhorjain/github/agi-core-codex-minimal/minimal.py): tiny CLI entrypoint
+- [language.py](/Users/vibhorjain/github/agi-core-codex-minimal/language.py): typed grid language, execution, scoring, and tree utilities
+- [learner.py](/Users/vibhorjain/github/agi-core-codex-minimal/learner.py): frontier search, causal credit, abstraction survival, and round reporting
+- [domains.py](/Users/vibhorjain/github/agi-core-codex-minimal/domains.py): synthetic curriculum and ARC dataset loading
+
+## Run
 - `python minimal.py synthetic`
 - `python minimal.py arc`
 - `python minimal.py both`
-Expected:
-- synthetic now runs a 4-stage branching curriculum plus a frozen choice probe:
-  - stage 1 learns `local(nonzero_mask, flip_h)`
-  - stage 2 learns two sibling abstractions, `chain(local(nonzero_mask, flip_h), transpose)` and `chain(flip_v, local(nonzero_mask, flip_h))`
-  - stage 3 grows one descendant from each branch
-  - stage 4 grows one deeper descendant from each branch again
-  - the frozen `synthetic choice` probe mixes branch-specific tasks and checks that the learned population picks the right branch without changing the library
-- synthetic stages 3 and 4 both show `critical_library_solves=4`; stage 4 shows `ablation_breaks=4`, and the frozen choice probe shows `library_solves=4` and `critical_library_solves=4`
-- causal ownership is now assigned to the outermost reused abstraction in a winning program, so the stage-2 pair owns only stage 2, while later branch abstractions own their downstream stage-3/stage-4/choice tasks
-- the library is ranked by unique causal coverage over solved tasks, which now makes the branch descendants visibly survive for different task sets instead of inheriting credit through the shared root
-- learned abstractions now also count as compressed units for later search-budget checks, so reuse buys real compositional headroom instead of only a cheaper ranking score after the search
-- ARC still goes `8/400` on train exact and `0/400` on public eval exact, with mean public-eval score about `0.507`; the current surviving abstractions have distinct exact-task and near-miss ownership, and the stronger transpose branch now helps `6` unsolved train tasks while the flip branch helps `1`
-- the current ARC population collapses to two causally useful abstractions:
+
+ARC expects JSON task files in one of:
+- `ARC_AGI_1_TRAIN_DIR`
+- `data/ARC-AGI/data/training`
+- `../agi-core/data/ARC-AGI/data/training`
+
+## Current Readout
+- Synthetic runs a 4-stage branching curriculum plus a frozen choice probe.
+- The shared stage-1 abstraction `local(nonzero_mask, flip_h)` owns stage 2, and later branch abstractions own the later stage-3/stage-4/choice tasks.
+- Learned abstractions now count as compressed units during later search, so reuse buys actual search headroom.
+- ARC currently reaches `8/400` exact on train and `0/400` exact on public eval, with mean public-eval score about `0.507`.
+- The two surviving ARC abstractions are:
   - `chain(local(nonzero_mask, transpose), local(nonzero_mask, flip_v))`
   - `chain(local(nonzero_mask, flip_h), local(nonzero_mask, flip_v))`
-  Together they cover the two exact train solves `ed36ccf7` and `3c9b0459`, and they split the remaining near-miss help across `4` unsolved tasks instead of one abstraction free-riding on the other
-- each round now prints fresh solved programs, critical solved programs, and compounding metrics including lineage depth, new population count, primitive-equivalent rejections, library solves, critical library solves, average library-attributed gain, counterfactual drop, average solved-task coverage, average unsolved-task help coverage, union coverage, union help, average criticality, average impact, survivor count, average reuse, pool-per-solve, no-library ablation, a `top population` summary ranked by causal necessity and unique coverage, and the top overlap pairs
