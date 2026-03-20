@@ -47,6 +47,9 @@ def run(p, g):
 
 def show(p): return p if isinstance(p, str) else f"{p[0]}({show(p[1])}, {show(p[2])})"
 def size(p): return 1 if isinstance(p, str) else 1 + size(p[1]) + size(p[2])
+def cost(p, names=()):
+    if size(p) > 1 and show(p) in set(names): return 1
+    return 1 if isinstance(p, str) else 1 + cost(p[1], names) + cost(p[2], names)
 def subtrees(p): return [] if isinstance(p, str) else [p, *subtrees(p[1]), *subtrees(p[2])]
 def pieces(p): return [p, *subtrees(p)]
 
@@ -95,7 +98,7 @@ def mutate(p, parts, selectors):
 
 def spawn(library, fronts, width=8, max_size=9):
     frontier_programs = unique([p for items in fronts.values() for _, p in items if kind(p) == "grid"])
-    library_programs = [e["program"] for e in sorted(library.values(), key=lambda e: (-e["reuse"], -e["support"], -e["gain"], e["age"], size(e["program"]), show(e["program"]))) if kind(e["program"]) == "grid"]
+    library_programs = [e["program"] for e in sorted(library.values(), key=lambda e: (-e["impact"], -e["reuse"], -e["support"], -e["gain"], e["age"], size(e["program"]), show(e["program"]))) if kind(e["program"]) == "grid"]
     evolvers = unique(library_programs[:width] + frontier_programs[:width])
     selectors = unique(list(MASK) + [t for p in evolvers for t in pieces(p) if kind(t) == "mask"])[:2]
     locals_ = [("local", s, t) for s in selectors for t in unique(list(GRID) + evolvers)[:width] if show(t) != "identity"]
@@ -112,8 +115,8 @@ def spawn(library, fronts, width=8, max_size=9):
             if show(a) != show(b): pool.append(("chain", a, b))
     return [p for p in unique(pool) if kind(p) == "grid" and size(p) <= max_size]
 
-def frontier(task, pool, keep=3, old=()):
-    ranked = sorted(((score(p, task["train"]), p) for p in unique(list(old) + pool)), key=lambda item: (-item[0], size(item[1]), show(item[1])))
+def frontier(task, pool, keep=3, old=(), library=()):
+    ranked = sorted(((score(p, task["train"]), p) for p in unique(list(old) + pool)), key=lambda item: (-item[0], cost(item[1], library), size(item[1]), show(item[1])))
     chosen, seen = [], set()
     inputs = [inp for inp, _ in task["train"]]
     for quality, program in ranked:
@@ -143,6 +146,15 @@ def causal_drop(task, program, names):
     base = score(program, task["train"])
     alts = unique([replace(program, path, "identity") for path, node in nodes(program) if path and size(node) > 1 and show(node) in names])
     return max(0.0, base - max([score(p, task["train"]) for p in alts] or [0.0]))
+
+def critical_names(task, program, names):
+    if not uses_library(program, names): return {}
+    base, out = score(program, task["train"]), {}
+    for name in names:
+        alts = unique([replace(program, path, "identity") for path, node in nodes(program) if path and size(node) > 1 and show(node) == name])
+        drop = max(0.0, base - max([score(p, task["train"]) for p in alts] or [0.0]))
+        if drop > 0: out[name] = drop
+    return out
 
 def depth_of(program, library):
     if isinstance(program, str): return 0
@@ -188,6 +200,7 @@ def evolve(library, improved, inputs, cap=12):
                 "program": item["program"],
                 "gain": item["gain"],
                 "support": item["support"],
+                "impact": 0.0,
                 "reuse": 0,
                 "age": 0,
                 "used": False,
@@ -200,7 +213,7 @@ def evolve(library, improved, inputs, cap=12):
             library[name]["gain"] += item["gain"]
             library[name]["support"] += item["support"]
     alive = [e for e in library.values() if e["reuse"] > 0 or e["age"] == 0]
-    keep = sorted(alive, key=lambda e: (-e["reuse"], -e["support"], -e["gain"], e["age"], size(e["program"]), show(e["program"])))[:cap]
+    keep = sorted(alive, key=lambda e: (-e["impact"], -e["reuse"], -e["support"], -e["gain"], e["age"], size(e["program"]), show(e["program"])))[:cap]
     library = {show(e["program"]): e for e in keep}
     return library, new[:cap], ranked[:5], primitive_equivalent_rejections
 
@@ -216,7 +229,7 @@ def evaluate(label, tasks, library):
     pool = spawn(library, {})
     exact = mean = 0.0
     for task in tasks.values():
-        best = frontier(task, pool, keep=1)[0][1]
+        best = frontier(task, pool, keep=1, library=library)[0][1]
         s = score(best, task["test"])
         exact += s == 1.0
         mean += s
@@ -240,9 +253,13 @@ def learn(label, tasks, eval_tasks=None, rounds=3, keep=4, library=None, freeze=
         improved = {}
         for task_id, task in tasks.items():
             before = fronts.get(task_id, [(0.0, "identity")])[0][0]
-            fronts[task_id] = frontier(task, pool, keep, [p for _, p in fronts.get(task_id, [])])
+            fronts[task_id] = frontier(task, pool, keep, [p for _, p in fronts.get(task_id, [])], library)
             better = [(quality - before, program) for quality, program in fronts[task_id] if quality > before]
             if better: improved[task_id] = better
+        if prior:
+            for task_id in tasks:
+                for name, drop in critical_names(tasks[task_id], fronts[task_id][0][1], prior).items():
+                    library[name]["impact"] += drop
         if freeze:
             new, top, primitive_equivalent_rejections = [], [], 0
         else:
@@ -258,14 +275,21 @@ def learn(label, tasks, eval_tasks=None, rounds=3, keep=4, library=None, freeze=
         critical_solves = sum(task_id in solved and drop > 0 for task_id, drop in winner_drops.items())
         survivors = len(prior & set(library))
         avg_reuse = sum(entry["reuse"] for entry in library.values()) / len(library) if library else 0.0
+        avg_impact = sum(entry["impact"] for entry in library.values()) / len(library) if library else 0.0
         depths = [entry["depth"] for entry in library.values()]
         ablation_breaks, ablation_gap = ablate(tasks, fronts)
+        fresh_programs = {task_id: show(fronts[task_id][0][1]) for task_id in fresh[:6]}
+        critical_tasks = [task_id for task_id in solved if winner_drops.get(task_id, 0) > 0]
+        critical_programs = {task_id: show(fronts[task_id][0][1]) for task_id in critical_tasks[:6]}
         print(f"{label} round {r}: {len(solved)}/{len(tasks)} solved, mean train {mean:.3f}, pool {len(pool)}")
         print("newly solved:", fresh[:12], "..." if len(fresh) > 12 else "")
+        print("fresh programs:", fresh_programs)
         print("new abstractions:", [f"{show(item['program'])} s{item['support']} g{item['gain']:.2f}" for item in new])
         print("reused abstractions:", reused[:8])
+        print("critical solves:", critical_tasks[:12], "..." if len(critical_tasks) > 12 else "")
+        print("critical programs:", critical_programs)
         print("top candidates:", [f"{show(item['program'])} s{item['support']} g{item['gain']:.2f}" for item in top])
-        print(f"metrics: library_solves={solve_reuse} critical_library_solves={critical_solves} avg_library_delta={sum(gain_reuse) / len(gain_reuse) if gain_reuse else 0:.3f} avg_counterfactual_drop={sum(winner_drops.values()) / len(winner_drops) if winner_drops else 0:.3f} survivors={survivors} avg_reuse={avg_reuse:.2f} pool_per_solve={len(pool) / max(1, len(solved)):.1f} lineage_depth_max={max(depths, default=0)} lineage_depth_avg={(sum(depths) / len(depths)) if depths else 0:.2f} new_population_count={len(new)} primitive_equivalent_rejections={primitive_equivalent_rejections} ablation_breaks={ablation_breaks} ablation_gap={ablation_gap:.3f}")
+        print(f"metrics: library_solves={solve_reuse} critical_library_solves={critical_solves} avg_library_delta={sum(gain_reuse) / len(gain_reuse) if gain_reuse else 0:.3f} avg_counterfactual_drop={sum(winner_drops.values()) / len(winner_drops) if winner_drops else 0:.3f} survivors={survivors} avg_reuse={avg_reuse:.2f} avg_impact={avg_impact:.3f} pool_per_solve={len(pool) / max(1, len(solved)):.1f} lineage_depth_max={max(depths, default=0)} lineage_depth_avg={(sum(depths) / len(depths)) if depths else 0:.2f} new_population_count={len(new)} primitive_equivalent_rejections={primitive_equivalent_rejections} ablation_breaks={ablation_breaks} ablation_gap={ablation_gap:.3f}")
         print("population:", [name for name in library])
         if eval_tasks and r in {1, rounds}: evaluate(f"public eval after round {r}", eval_tasks, library)
     return library
