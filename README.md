@@ -14,6 +14,9 @@ Expected:
   - the frozen `synthetic choice` probe mixes branch-specific tasks and checks that the learned population picks the right branch without changing the library
 - synthetic stages 3 and 4 now both show `critical_library_solves=4`; stage 4 shows `ablation_breaks=4`, and the frozen choice probe shows `library_solves=4` and `critical_library_solves=4`
 - the library is now ranked by unique causal coverage over solved tasks, which makes it clear that the branch descendants survive because they cover different solved-task sets, not because the survival rule is just keeping everything
-- ARC currently goes `8/400` on train exact and `0/400` on public eval exact, with mean public-eval score about `0.507`; learned abstractions are causally required for real train tasks like `3c9b0459` and `ed36ccf7`, and they also now show broad near-miss help coverage across unsolved tasks
-- ARC overlap is now visible too: the two surviving abstractions help many of the same near-miss tasks, with overlap around Jaccard `0.64` to `0.69`, so the current substrate is not yet splitting ARC into clearly different abstraction niches
+- ARC currently goes `8/400` on train exact and `0/400` on public eval exact, with mean public-eval score about `0.507`; after fixing root-level credit, the surviving abstractions now have real exact-task and near-miss ownership instead of vague overlap
+- the current ARC population collapses to two causally useful abstractions:
+  - `chain(local(nonzero_mask, transpose), local(nonzero_mask, flip_v))`
+  - `chain(local(nonzero_mask, flip_h), local(nonzero_mask, flip_v))`
+  Together they cover the two exact train solves `ed36ccf7` and `3c9b0459`, and they split the remaining near-miss help across `4` unsolved tasks instead of one abstraction free-riding on the other
 - each round now prints fresh solved programs, critical solved programs, and compounding metrics including lineage depth, new population count, primitive-equivalent rejections, library solves, critical library solves, average library-attributed gain, counterfactual drop, average solved-task coverage, average unsolved-task help coverage, union coverage, union help, average criticality, average impact, survivor count, average reuse, pool-per-solve, no-library ablation, a `top population` summary ranked by causal necessity and unique coverage, and the top overlap pairs

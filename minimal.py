@@ -144,14 +144,15 @@ def replace(p, path, new):
 def causal_drop(task, program, names):
     if not uses_library(program, names): return 0.0
     base = score(program, task["train"])
-    alts = unique([replace(program, path, "identity") for path, node in nodes(program) if path and size(node) > 1 and show(node) in names])
+    alts = unique([replace(program, path, "identity") for path, node in nodes(program) if size(node) > 1 and show(node) in names])
     return max(0.0, base - max([score(p, task["train"]) for p in alts] or [0.0]))
 
 def critical_names(task, program, names):
     if not uses_library(program, names): return {}
     base, out = score(program, task["train"]), {}
     for name in names:
-        alts = unique([replace(program, path, "identity") for path, node in nodes(program) if path and size(node) > 1 and show(node) == name])
+        alts = unique([replace(program, path, "identity") for path, node in nodes(program) if size(node) > 1 and show(node) == name])
+        if not alts: continue
         drop = max(0.0, base - max([score(p, task["train"]) for p in alts] or [0.0]))
         if drop > 0: out[name] = drop
     return out
@@ -234,7 +235,7 @@ def evolve(library, improved, samples, cap=12):
         elif name in library:
             library[name]["gain"] += item["gain"]
             library[name]["support"] += item["support"]
-    alive = [e for e in library.values() if e["reuse"] > 0 or e["age"] == 0]
+    alive = [e for e in library.values() if e["age"] == 0 or e["critical"] > 0 or e["helps"] or e["impact"] >= 0.1]
     keep = keep_alive(alive, cap)
     library = {show(e["program"]): e for e in keep}
     return library, new[:cap], ranked[:5], primitive_equivalent_rejections
