@@ -22,6 +22,9 @@ def run(program, grid, primitives):
     for name in program: grid = primitives[name](grid)
     return grid
 
+def show(program):
+    return " -> ".join(program)
+
 def quality(program, examples, primitives):
     def cell_score(inp, out):
         pred = run(program, inp, primitives)
@@ -38,43 +41,50 @@ def novel(pair, primitives):
     outputs = [run(pair, probe, primitives) for probe in PROBES]
     return all(outputs != [run((name,), probe, primitives) for probe in PROBES] for name in primitives)
 
-def abstract(frontier, primitives, threshold=1.5):
+def pair_weights(frontier):
     weights = {}
     for score, program in frontier.values():
         for i in range(len(program) - 1):
             pair = program[i:i + 2]
             weights[pair] = weights.get(pair, 0.0) + score
+    return sorted(weights.items(), key=lambda item: (-item[1], item[0]))
+
+def abstract(frontier, primitives, threshold=1.5):
     new = []
-    for pair, weight in weights.items():
+    ranked = pair_weights(frontier)
+    for pair, weight in ranked:
         name = "+".join(pair)
         if weight >= threshold and name not in primitives and novel(pair, primitives):
             primitives[name] = lambda g, p=pair: run(p, g, primitives)
             new.append((name, weight))
-    return new
+    return new, ranked
 
 def learn(label, tasks, rounds=2):
     primitives, usefulness, frontier = SEEDS.copy(), {name: 1.0 for name in SEEDS}, {}
     for round_number in range(1, rounds + 1):
-        improved = []
+        improved = {}
         for task_id, examples in tasks.items():
             program = min(
                 candidates(primitives, usefulness),
-                key=lambda p: (-quality(p, examples, primitives), -sum(usefulness.get(op, 1.0) for op in p), len(p), p),
+                key=lambda p: (-quality(p, examples, primitives), len(p), -sum(usefulness.get(op, 1.0) for op in p), p),
             )
             score = quality(program, examples, primitives)
             if task_id not in frontier or score > frontier[task_id][0]:
                 frontier[task_id] = (score, program)
-                improved.append(task_id)
+                improved[task_id] = (score, program)
         for task_id in improved:
             score, program = frontier[task_id]
             for op in program: usefulness[op] = usefulness.get(op, 1.0) + score
-        new = abstract(frontier, primitives)
+        new, ranked = abstract(frontier, primitives)
         for primitive_name, weight in new: usefulness[primitive_name] = weight
         solved = sorted(task_id for task_id, (score, _) in frontier.items() if score == 1.0)
         near = sum(0 < score < 1 for score, _ in frontier.values())
+        top_pairs = [f"{show(pair)} ({weight:.2f})" for pair, weight in ranked[:3]]
         print(f"{label} round {round_number}: {len(solved)}/{len(tasks)} solved, {near} near-misses")
-        print("improved:", improved)
-        print("new primitives:", [primitive_name for primitive_name, _ in new])
+        print("improved:", [f"{task_id}: {score:.2f} via {show(program)}" for task_id, (score, program) in improved.items()])
+        print("solved programs:", [f"{task_id}: {show(frontier[task_id][1])}" for task_id in solved])
+        print("new primitives:", [f"{primitive_name} ({weight:.2f})" for primitive_name, weight in new])
+        print("top pair candidates:", top_pairs)
         print("library:", [primitive_name for primitive_name in primitives if primitive_name not in SEEDS])
 
 def make_task(grid, program):
