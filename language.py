@@ -42,7 +42,34 @@ class Remap:
     col_expr: str
 
 
-Program = PrimRef | Pipe | Focus | Remap
+@dataclass(frozen=True)
+class CoordEq:
+    """Coordinate equality predicate such as row == col or row == 0."""
+
+    left_expr: str
+    right_expr: str
+
+
+@dataclass(frozen=True)
+class MaskAnd:
+    left: "Program"
+    right: "Program"
+
+
+@dataclass(frozen=True)
+class MaskOr:
+    left: "Program"
+    right: "Program"
+
+
+@dataclass(frozen=True)
+class Select:
+    mask: "Program"
+    when_true: "Program"
+    when_false: "Program"
+
+
+Program = PrimRef | Pipe | Focus | Remap | CoordEq | MaskAnd | MaskOr | Select
 
 
 def identity(grid: Grid) -> Grid:
@@ -70,13 +97,16 @@ PRIMITIVES = {
 # transpose are meant to emerge from these, not appear as named primitives.
 ROW_EXPR = ("row", "height-1-row", "col", "height-1-col")
 COL_EXPR = ("col", "width-1-col", "row", "width-1-row")
+PREDICATE_EXPR = ("zero",) + ROW_EXPR + COL_EXPR
 
 
 def input_kind(program: Program) -> Kind:
     if isinstance(program, PrimRef):
         return PRIMITIVES[program.name].input_kind
-    if isinstance(program, Remap):
+    if isinstance(program, (Remap, CoordEq)):
         return "grid"
+    if isinstance(program, (MaskAnd, MaskOr)):
+        return "mask"
     if isinstance(program, Pipe):
         return input_kind(program.left)
     return "grid"
@@ -86,6 +116,12 @@ def output_kind(program: Program) -> Kind:
     if isinstance(program, PrimRef):
         return PRIMITIVES[program.name].output_kind
     if isinstance(program, Remap):
+        return "grid"
+    if isinstance(program, CoordEq):
+        return "mask"
+    if isinstance(program, (MaskAnd, MaskOr)):
+        return "mask"
+    if isinstance(program, Select):
         return "grid"
     if isinstance(program, Pipe):
         return output_kind(program.right)
@@ -97,6 +133,14 @@ def render(program: Program) -> str:
         return program.name
     if isinstance(program, Remap):
         return f"remap({program.row_expr}, {program.col_expr})"
+    if isinstance(program, CoordEq):
+        return f"coord_eq({program.left_expr}, {program.right_expr})"
+    if isinstance(program, MaskAnd):
+        return f"mask_and({render(program.left)}, {render(program.right)})"
+    if isinstance(program, MaskOr):
+        return f"mask_or({render(program.left)}, {render(program.right)})"
+    if isinstance(program, Select):
+        return f"select({render(program.mask)}, {render(program.when_true)}, {render(program.when_false)})"
     if isinstance(program, Pipe):
         return f"pipe({render(program.left)}, {render(program.right)})"
     return f"focus({render(program.selector)}, {render(program.transform)})"
@@ -108,16 +152,24 @@ def cost(program: Program, learned: set[str] | None = None) -> int:
         return 1
     if isinstance(program, PrimRef):
         return 1
-    if isinstance(program, Remap):
+    if isinstance(program, (Remap, CoordEq)):
         return 1
+    if isinstance(program, (MaskAnd, MaskOr)):
+        return 1 + cost(program.left, learned) + cost(program.right, learned)
+    if isinstance(program, Select):
+        return 1 + cost(program.mask, learned) + cost(program.when_true, learned) + cost(program.when_false, learned)
     if isinstance(program, Pipe):
         return 1 + cost(program.left, learned) + cost(program.right, learned)
     return 1 + cost(program.selector, learned) + cost(program.transform, learned)
 
 
 def walk(program: Program) -> list[Program]:
-    if isinstance(program, (PrimRef, Remap)):
+    if isinstance(program, (PrimRef, Remap, CoordEq)):
         return [program]
+    if isinstance(program, (MaskAnd, MaskOr)):
+        return [program, *walk(program.left), *walk(program.right)]
+    if isinstance(program, Select):
+        return [program, *walk(program.mask), *walk(program.when_true), *walk(program.when_false)]
     if isinstance(program, Pipe):
         return [program, *walk(program.left), *walk(program.right)]
     return [program, *walk(program.selector), *walk(program.transform)]
@@ -132,12 +184,22 @@ def remap_family() -> list[Remap]:
     ]
 
 
+def coord_mask_family() -> list[CoordEq]:
+    return [
+        CoordEq(left_expr, right_expr)
+        for left_expr in PREDICATE_EXPR
+        for right_expr in PREDICATE_EXPR
+        if left_expr < right_expr
+    ]
+
+
 def output_axis(expr: str) -> str:
     return "row" if expr.endswith("row") else "col"
 
 
 def expr_value(expr: str, row: int, col: int, height: int, width: int) -> int:
     return {
+        "zero": 0,
         "row": row,
         "height-1-row": height - 1 - row,
         "col": col,
@@ -198,6 +260,33 @@ def evaluate(program: Program, grid: Grid) -> Grid:
                 for col in range(out_width)
             ]
             for row in range(out_height)
+        ]
+    if isinstance(program, CoordEq):
+        height, width = len(grid), len(grid[0])
+        return [
+            [
+                1 if expr_value(program.left_expr, row, col, height, width) == expr_value(program.right_expr, row, col, height, width) else 0
+                for col in range(width)
+            ]
+            for row in range(height)
+        ]
+    if isinstance(program, MaskAnd):
+        left = evaluate(program.left, grid)
+        right = evaluate(program.right, grid)
+        return [[1 if a and b else 0 for a, b in zip(row_a, row_b)] for row_a, row_b in zip(left, right)]
+    if isinstance(program, MaskOr):
+        left = evaluate(program.left, grid)
+        right = evaluate(program.right, grid)
+        return [[1 if a or b else 0 for a, b in zip(row_a, row_b)] for row_a, row_b in zip(left, right)]
+    if isinstance(program, Select):
+        mask = evaluate(program.mask, grid)
+        when_true = evaluate(program.when_true, grid)
+        when_false = evaluate(program.when_false, grid)
+        if any(len(item) != len(grid) or len(item[0]) != len(grid[0]) for item in (mask, when_true, when_false)):
+            return grid
+        return [
+            [a if use else b for use, a, b in zip(mask_row, true_row, false_row)]
+            for mask_row, true_row, false_row in zip(mask, when_true, when_false)
         ]
     if isinstance(program, Pipe):
         return evaluate(program.right, evaluate(program.left, grid))

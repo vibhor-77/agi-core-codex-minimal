@@ -50,8 +50,9 @@ That suggests a better substrate than naming those operations directly.
 Higher-level operations should ideally be discovered:
 
 - mirror / transpose / rotate from coordinate remaps
+- diagonals / borders / corners from coordinate predicates
 - crop from `bbox(mask)`
-- local rewrite from `select -> transform -> write back`
+- local rewrite from `mask -> select -> write back`
 - repetition / projection / packing from repeated use of the same low-level operations
 
 ## Why This Matters

@@ -5,14 +5,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from language import (
+    CoordEq,
     Focus,
     Grid,
     Kind,
+    MaskAnd,
+    MaskOr,
     Pipe,
     PrimRef,
     Program,
     PRIMITIVES,
+    Select,
     cost,
+    coord_mask_family,
     input_kind,
     output_kind,
     remap_family,
@@ -46,11 +51,17 @@ Frontier = dict[str, list[tuple[float, Program]]]
 
 
 def seed_programs(kind: Kind) -> list[Program]:
-    """True primitives plus a tiny family of discoverable coordinate remaps."""
+    """Top-level programs that can start directly from a grid input."""
 
-    base = [PrimRef(name) for name, prim in PRIMITIVES.items() if prim.output_kind == kind]
+    base = [
+        PrimRef(name)
+        for name, prim in PRIMITIVES.items()
+        if prim.input_kind == "grid" and prim.output_kind == kind
+    ]
     if kind == "grid":
         return base + remap_family()
+    if kind == "mask":
+        return base + coord_mask_family()
     return base
 
 
@@ -67,7 +78,8 @@ def sample_inputs(tasks: dict[str, Task], limit: int = 8) -> list[Grid]:
 def enumerate_programs(library: Library, fronts: Frontier, max_cost: int = 7) -> list[Program]:
     learned = set(library)
     grid_prims = seed_programs("grid")
-    mask_prims = seed_programs("mask")
+    selectors_root = seed_programs("mask")
+    mask_steps = [PrimRef(name) for name, prim in PRIMITIVES.items() if prim.output_kind == "mask"]
     frontier_programs = unique([items[0][1] for items in fronts.values() if items])
 
     learned_transforms = unique(
@@ -79,7 +91,7 @@ def enumerate_programs(library: Library, fronts: Frontier, max_cost: int = 7) ->
     selectors = unique(
         [entry.program for entry in library.values() if entry.kind == "mask"]
         + [program for program in frontier_programs if output_kind(program) == "mask"]
-        + mask_prims
+        + selectors_root
     )[:6]
 
     transform_extensions = [
@@ -96,14 +108,31 @@ def enumerate_programs(library: Library, fronts: Frontier, max_cost: int = 7) ->
     selector_extensions = [
         Pipe(base, primitive)
         for base in learned_transforms + grid_prims
-        for primitive in mask_prims
+        for primitive in mask_steps
         if output_kind(base) == input_kind(primitive)
+    ]
+    selector_pairs = [
+        join(left, right)
+        for join in (MaskAnd, MaskOr)
+        for index, left in enumerate(selectors)
+        for right in selectors[index + 1:index + 4]
     ]
 
     transforms = unique(transforms + transform_extensions)[:18]
-    selectors = unique(selectors + selector_extensions)[:8]
+    selectors = unique(selectors + selector_extensions + selector_pairs)[:12]
     focuses = [Focus(selector, transform) for selector in selectors for transform in transforms if render(transform) != "identity"]
-    pool = unique(transforms + focuses)
+    selects = [
+        Select(selector, transform, PrimRef("identity"))
+        for selector in selectors
+        for transform in transforms
+        if render(transform) != "identity"
+    ] + [
+        Select(selector, PrimRef("identity"), transform)
+        for selector in selectors
+        for transform in transforms
+        if render(transform) != "identity"
+    ]
+    pool = unique(transforms + focuses + selects)
     return [program for program in pool if cost(program, learned) <= max_cost]
 
 
@@ -136,7 +165,7 @@ def promote(library: Library, improved: dict[str, list[tuple[float, Program]]], 
         if delta <= 0:
             continue
         for subtree in walk(winner):
-            if isinstance(subtree, PrimRef):
+            if isinstance(subtree, (PrimRef, CoordEq)):
                 continue
             name = render(subtree)
             item = candidates.setdefault(name, Abstraction(program=subtree, kind=output_kind(subtree)))

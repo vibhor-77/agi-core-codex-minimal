@@ -24,6 +24,12 @@ A small 4-pillar scaffold aimed at discovering structure from low-level grid ope
 - generated coordinate remaps:
   - programs like `remap(row, width-1-col)` or `remap(col, row)`
   - this is where mirror, transpose, and rotation-like behavior are meant to be discovered
+- generated coordinate predicates:
+  - programs like `coord_eq(row, col)` or `coord_eq(row, zero)`
+  - this is where diagonals, borders, corners, and simple anchors can emerge
+- mask and cellwise composition:
+  - `mask_and(left, right)` and `mask_or(left, right)`
+  - `select(mask, when_true, when_false)` for cellwise writeback
 - program constructors:
   - `pipe(left, right)` for composition
   - `focus(selector, transform)` for local apply-and-writeback
@@ -42,6 +48,10 @@ ARC expects JSON task files in:
 - The current design choice is deliberate:
   - mirror, transpose, and rotate should not be named primitives
   - they should emerge as coordinate remap programs
-  - local behavior should come from `focus(selector, transform)`, not ARC-specific tactics
-- Synthetic currently demonstrates staged compounding around one learned local remap abstraction.
-- ARC is still only a proof-of-concept transfer probe, not the optimization target.
+  - local behavior should come from selectors, cellwise selection, and writeback, not ARC-specific tactics
+- Synthetic still acts mainly as a scaffold check; it now exercises remaps, selectors, and cellwise selection on the same tiny search loop.
+- ARC is still only a proof-of-concept transfer probe, but the lower-level substrate now does slightly more:
+  - round 1: `10/400` exact on train
+  - round 3: `10/400` exact on train
+  - public eval: `0/400` exact, mean test about `0.535`
+  - newly surfaced programs include `coord_eq(...)` and `select(...)`, not just remaps
