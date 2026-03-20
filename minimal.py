@@ -113,8 +113,8 @@ def evaluate(label, tasks, library):
         mean += s
     print(f"{label}: {int(exact)}/{len(tasks)} exact, mean test {mean / len(tasks):.3f}")
 
-def learn(label, tasks, eval_tasks=None, rounds=3, keep=3):
-    library, fronts, inputs, solved_before = {}, {}, sample_inputs(tasks), set()
+def learn(label, tasks, eval_tasks=None, rounds=3, keep=3, library=None):
+    library, fronts, inputs, solved_before = ({} if library is None else dict(library)), {}, sample_inputs(tasks), set()
     for r in range(1, rounds + 1):
         prior = set(library)
         pool = spawn(library, fronts)
@@ -142,21 +142,36 @@ def learn(label, tasks, eval_tasks=None, rounds=3, keep=3):
         print(f"metrics: library_solves={solve_reuse} avg_library_delta={sum(gain_reuse) / len(gain_reuse) if gain_reuse else 0:.3f} survivors={survivors} avg_reuse={avg_reuse:.2f} pool_per_solve={len(pool) / max(1, len(solved)):.1f}")
         print("population:", [name for name in library])
         if eval_tasks and r in {1, rounds}: evaluate(f"public eval after round {r}", eval_tasks, library)
+    return library
 
 def task(grid, program):
     out = run(program, grid)
     return {"train": [(grid, out)], "test": [(grid, out)]}
 
-def synthetic():
+def synthetic_stages():
     pair = ("chain", "flip_h", "nonzero_mask")
-    return {
-        "flip_h": task([[1, 0], [0, 0]], "flip_h"),
-        "mask": task([[1, 2, 0], [0, 0, 3]], "nonzero_mask"),
-        "pair_1": task([[1, 0, 0], [2, 3, 0]], pair),
-        "pair_2": task([[0, 4, 5], [6, 0, 0]], pair),
-        "hard_1": task([[1, 0, 0], [0, 2, 3]], ("chain", pair, "transpose")),
-        "hard_2": task([[1, 0, 2], [3, 0, 0]], ("chain", pair, "flip_v")),
-    }
+    triple = ("chain", pair, "transpose")
+    return [
+        ("stage_1", {
+            "flip_h": task([[1, 0], [0, 0]], "flip_h"),
+            "mask": task([[1, 2, 0], [0, 0, 3]], "nonzero_mask"),
+            "pair_1": task([[1, 0, 0], [2, 3, 0]], pair),
+            "pair_2": task([[0, 4, 5], [6, 0, 0]], pair),
+        }),
+        ("stage_2", {
+            "triple_1": task([[1, 0, 0], [0, 2, 3]], triple),
+            "triple_2": task([[0, 4, 5], [6, 0, 0]], triple),
+        }),
+        ("stage_3", {
+            "hard_1": task([[1, 0, 2], [3, 0, 0]], ("chain", triple, "flip_v")),
+            "hard_2": task([[0, 5, 0], [6, 0, 7]], ("chain", triple, "flip_h")),
+        }),
+    ]
+
+def synthetic():
+    library = {}
+    for stage, tasks in synthetic_stages():
+        library = learn(f"synthetic {stage}", tasks, rounds=1, library=library)
 
 def arc_root():
     here = Path(__file__).resolve().parent
@@ -178,5 +193,5 @@ def arc(split):
 
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "both"
-    if mode in {"synthetic", "both"}: learn("synthetic", synthetic(), rounds=2)
+    if mode in {"synthetic", "both"}: synthetic()
     if mode in {"arc", "both"}: learn("arc train", arc("training"), arc("evaluation"))
