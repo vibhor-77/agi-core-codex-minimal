@@ -15,6 +15,7 @@ def run(p, g):
 def show(p): return p if isinstance(p, str) else f"chain({show(p[1])}, {show(p[2])})"
 def size(p): return 1 if isinstance(p, str) else 1 + size(p[1]) + size(p[2])
 def subtrees(p): return [] if isinstance(p, str) else [p, *subtrees(p[1]), *subtrees(p[2])]
+def pieces(p): return [p, *subtrees(p)]
 
 def score(p, examples):
     total = hits = 0
@@ -37,15 +38,21 @@ def unique(programs):
             seen.add(name)
     return out
 
-def spawn(library, leaders, width=6, max_size=7):
-    ranked = list(PRIMS) + [e["program"] for e in sorted(library.values(), key=lambda e: (-e["reuse"], -e["gain"], show(e["program"])))] + leaders
+def uses_library(p, names):
+    known = set(names)
+    return any(size(t) > 1 and show(t) in known for t in pieces(p))
+
+def spawn(library, fronts, width=6, max_size=7):
+    frontier_programs = [p for items in fronts.values() for _, p in items]
+    ranked = list(PRIMS) + [e["program"] for e in sorted(library.values(), key=lambda e: (-e["reuse"], -e["gain"], show(e["program"])))] + frontier_programs
     basis = unique(ranked)[:width]
+    parts = unique([t for p in basis for t in pieces(p)])[: width * 2]
     pool = basis[:]
     for p in basis:
         for q in PRIMS:
             pool += [("chain", q, p), ("chain", p, q)]
-    for a in basis[:4]:
-        for b in basis[:4]:
+    for a in parts[:width]:
+        for b in parts[:width]:
             if show(a) != show(b): pool.append(("chain", a, b))
     return [p for p in unique(pool) if size(p) <= max_size]
 
@@ -58,19 +65,24 @@ def evolve(library, improved, inputs, cap=8):
         entry["age"] += 1
         entry["used"] = False
     gains = {}
-    for delta, leader in improved.values():
-        trees = {show(t): t for t in subtrees(leader)}
-        for name, tree in trees.items():
+    for candidates in improved.values():
+        used, task_best = set(), {}
+        for delta, leader in candidates:
+            for tree in [t for t in pieces(leader) if size(t) > 1]:
+                name = show(tree)
+                used.add(name)
+                if name not in task_best or delta > task_best[name][1]:
+                    task_best[name] = (tree, delta)
+        for name, (tree, delta) in task_best.items():
             item = gains.setdefault(name, {"program": tree, "gain": 0.0, "support": 0})
             item["gain"] += delta
             item["support"] += 1
-        used = set(trees)
-        for name, entry in library.items():
-            if name in used:
-                entry["reuse"] += 1
-                entry["used"] = True
-                entry["age"] = 0
-    seen = {signature(entry["program"], inputs) for entry in library.values()}
+        for name in used:
+            if name in library:
+                library[name]["reuse"] += 1
+                library[name]["used"] = True
+                library[name]["age"] = 0
+    seen = {signature(name, inputs) for name in PRIMS} | {signature(entry["program"], inputs) for entry in library.values()}
     ranked = sorted(gains.values(), key=lambda item: (-item["support"], -item["gain"], size(item["program"]), show(item["program"])))
     new = []
     for item in ranked:
@@ -92,7 +104,7 @@ def sample_inputs(tasks, limit=8):
     return grids
 
 def evaluate(label, tasks, library):
-    pool = spawn(library, [])
+    pool = spawn(library, {})
     exact = mean = 0.0
     for task in tasks.values():
         best = frontier(task, pool, keep=1)[0][1]
@@ -104,25 +116,30 @@ def evaluate(label, tasks, library):
 def learn(label, tasks, eval_tasks=None, rounds=3, keep=3):
     library, fronts, inputs, solved_before = {}, {}, sample_inputs(tasks), set()
     for r in range(1, rounds + 1):
-        leaders = [items[0][1] for items in fronts.values()] if fronts else []
-        pool = spawn(library, leaders)
+        prior = set(library)
+        pool = spawn(library, fronts)
         improved = {}
         for task_id, task in tasks.items():
             before = fronts.get(task_id, [(0.0, "identity")])[0][0]
             fronts[task_id] = frontier(task, pool, keep, [p for _, p in fronts.get(task_id, [])])
-            after, leader = fronts[task_id][0]
-            if after > before: improved[task_id] = (after - before, leader)
+            better = [(quality - before, program) for quality, program in fronts[task_id] if quality > before]
+            if better: improved[task_id] = better
         library, new, top = evolve(library, improved, inputs)
         solved = sorted(task_id for task_id, items in fronts.items() if items[0][0] == 1.0)
         fresh = sorted(set(solved) - solved_before)
         solved_before = set(solved)
         mean = sum(items[0][0] for items in fronts.values()) / len(tasks)
         reused = sorted(name for name, entry in library.items() if entry["used"])
+        solve_reuse = sum(uses_library(fronts[task_id][0][1], prior) for task_id in solved)
+        gain_reuse = [delta for items in improved.values() for delta, program in items if uses_library(program, prior)]
+        survivors = len(prior & set(library))
+        avg_reuse = sum(entry["reuse"] for entry in library.values()) / len(library) if library else 0.0
         print(f"{label} round {r}: {len(solved)}/{len(tasks)} solved, mean train {mean:.3f}, pool {len(pool)}")
         print("newly solved:", fresh[:12], "..." if len(fresh) > 12 else "")
         print("new abstractions:", [f"{show(item['program'])} s{item['support']} g{item['gain']:.2f}" for item in new])
         print("reused abstractions:", reused[:8])
         print("top candidates:", [f"{show(item['program'])} s{item['support']} g{item['gain']:.2f}" for item in top])
+        print(f"metrics: library_solves={solve_reuse} avg_library_delta={sum(gain_reuse) / len(gain_reuse) if gain_reuse else 0:.3f} survivors={survivors} avg_reuse={avg_reuse:.2f} pool_per_solve={len(pool) / max(1, len(solved)):.1f}")
         print("population:", [name for name in library])
         if eval_tasks and r in {1, rounds}: evaluate(f"public eval after round {r}", eval_tasks, library)
 

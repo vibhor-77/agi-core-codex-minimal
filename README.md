@@ -7,4 +7,5 @@ Run:
 - `python minimal.py both`
 Expected:
 - synthetic should go `4/6 -> 6/6`, promoting `chain(flip_h, nonzero_mask)` in round 1
-- ARC currently goes `8/400` on train exact and `0/400` on public eval exact, while raising mean public-eval score to about `0.527` with a much smaller, more basic substrate
+- ARC currently goes `8/400` on train exact and `0/400` on public eval exact, while raising mean public-eval score to about `0.527`
+- each round now prints compounding metrics: solves using learned abstractions, average library-attributed gain, survivor count, average reuse, and pool-per-solve
