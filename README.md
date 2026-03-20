@@ -13,4 +13,4 @@ Expected:
   - stage 4 reuses the depth-3 abstraction to learn `local(nonzero_mask, chain(chain(local(nonzero_mask, flip_h), transpose), flip_h))`
 - synthetic stages 3 and 4 now show `ablation_breaks=2`, so both tasks in those stages fail if the learned population is removed
 - ARC currently goes `8/400` on train exact and `0/400` on public eval exact, with mean public-eval score about `0.507`
-- each round now prints compounding metrics including lineage depth, new population count, primitive-equivalent rejections, library solves, average library-attributed gain, survivor count, average reuse, pool-per-solve, and no-library ablation
+- each round now prints compounding metrics including lineage depth, new population count, primitive-equivalent rejections, library solves, critical library solves, average library-attributed gain, counterfactual drop, survivor count, average reuse, pool-per-solve, and no-library ablation

@@ -127,6 +127,23 @@ def frontier(task, pool, keep=3, old=()):
 def parents_of(program):
     return [] if isinstance(program, str) else [show(program[1]), show(program[2])]
 
+def nodes(p, path=()):
+    out = [(path, p)]
+    if isinstance(p, str): return out
+    return out + nodes(p[1], path + (1,)) + nodes(p[2], path + (2,))
+
+def replace(p, path, new):
+    if not path: return new
+    q = list(p)
+    q[path[0]] = replace(p[path[0]], path[1:], new)
+    return tuple(q)
+
+def causal_drop(task, program, names):
+    if not uses_library(program, names): return 0.0
+    base = score(program, task["train"])
+    alts = unique([replace(program, path, "identity") for path, node in nodes(program) if path and size(node) > 1 and show(node) in names])
+    return max(0.0, base - max([score(p, task["train"]) for p in alts] or [0.0]))
+
 def depth_of(program, library):
     if isinstance(program, str): return 0
     child_depths = []
@@ -234,6 +251,8 @@ def learn(label, tasks, eval_tasks=None, rounds=3, keep=4, library=None):
         reused = sorted(name for name, entry in library.items() if entry["used"])
         solve_reuse = sum(uses_library(fronts[task_id][0][1], prior) for task_id in solved)
         gain_reuse = [delta for items in improved.values() for delta, program in items if uses_library(program, prior)]
+        winner_drops = {task_id: causal_drop(tasks[task_id], fronts[task_id][0][1], prior) for task_id in tasks if prior and uses_library(fronts[task_id][0][1], prior)}
+        critical_solves = sum(task_id in solved and drop > 0 for task_id, drop in winner_drops.items())
         survivors = len(prior & set(library))
         avg_reuse = sum(entry["reuse"] for entry in library.values()) / len(library) if library else 0.0
         depths = [entry["depth"] for entry in library.values()]
@@ -243,7 +262,7 @@ def learn(label, tasks, eval_tasks=None, rounds=3, keep=4, library=None):
         print("new abstractions:", [f"{show(item['program'])} s{item['support']} g{item['gain']:.2f}" for item in new])
         print("reused abstractions:", reused[:8])
         print("top candidates:", [f"{show(item['program'])} s{item['support']} g{item['gain']:.2f}" for item in top])
-        print(f"metrics: library_solves={solve_reuse} avg_library_delta={sum(gain_reuse) / len(gain_reuse) if gain_reuse else 0:.3f} survivors={survivors} avg_reuse={avg_reuse:.2f} pool_per_solve={len(pool) / max(1, len(solved)):.1f} lineage_depth_max={max(depths, default=0)} lineage_depth_avg={(sum(depths) / len(depths)) if depths else 0:.2f} new_population_count={len(new)} primitive_equivalent_rejections={primitive_equivalent_rejections} ablation_breaks={ablation_breaks} ablation_gap={ablation_gap:.3f}")
+        print(f"metrics: library_solves={solve_reuse} critical_library_solves={critical_solves} avg_library_delta={sum(gain_reuse) / len(gain_reuse) if gain_reuse else 0:.3f} avg_counterfactual_drop={sum(winner_drops.values()) / len(winner_drops) if winner_drops else 0:.3f} survivors={survivors} avg_reuse={avg_reuse:.2f} pool_per_solve={len(pool) / max(1, len(solved)):.1f} lineage_depth_max={max(depths, default=0)} lineage_depth_avg={(sum(depths) / len(depths)) if depths else 0:.2f} new_population_count={len(new)} primitive_equivalent_rejections={primitive_equivalent_rejections} ablation_breaks={ablation_breaks} ablation_gap={ablation_gap:.3f}")
         print("population:", [name for name in library])
         if eval_tasks and r in {1, rounds}: evaluate(f"public eval after round {r}", eval_tasks, library)
     return library
