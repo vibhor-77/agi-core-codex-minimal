@@ -76,6 +76,23 @@ def uses_library(p, names):
     known = set(names)
     return any(size(t) > 1 and show(t) in known for t in pieces(p))
 
+def mutate(p, parts, selectors):
+    out = []
+    if isinstance(p, str): return out
+    if p[0] == "chain":
+        for q in parts:
+            if show(q) != show(p[1]): out.append(("chain", q, p[2]))
+            if show(q) != show(p[2]): out.append(("chain", p[1], q))
+    if p[0] == "local":
+        for s in selectors:
+            if s != p[1]: out.append(("local", s, p[2]))
+        for q in parts:
+            if show(q) != show(p[2]): out.append(("local", p[1], q))
+    for child in p[1:]:
+        for q in mutate(child, parts, selectors):
+            out.append(("chain", q, p[2]) if p[0] == "chain" and child is p[1] else ("chain", p[1], q) if p[0] == "chain" else ("local", p[1], q))
+    return out
+
 def spawn(library, fronts, width=8, max_size=9):
     frontier_programs = unique([p for items in fronts.values() for _, p in items if kind(p) == "grid"])
     library_programs = [e["program"] for e in sorted(library.values(), key=lambda e: (-e["reuse"], -e["support"], -e["gain"], e["age"], size(e["program"]), show(e["program"]))) if kind(e["program"]) == "grid"]
@@ -87,6 +104,9 @@ def spawn(library, fronts, width=8, max_size=9):
     for p in evolvers:
         for q in GRID:
             pool += [("chain", q, p), ("chain", p, q)]
+        for s in selectors:
+            if show(p) != "identity": pool.append(("local", s, p))
+        pool += mutate(p, parts[:width], selectors)
     for a in parts[:width]:
         for b in parts[:width]:
             if show(a) != show(b): pool.append(("chain", a, b))
@@ -94,7 +114,15 @@ def spawn(library, fronts, width=8, max_size=9):
 
 def frontier(task, pool, keep=3, old=()):
     ranked = sorted(((score(p, task["train"]), p) for p in unique(list(old) + pool)), key=lambda item: (-item[0], size(item[1]), show(item[1])))
-    return ranked[:keep]
+    chosen, seen = [], set()
+    inputs = [inp for inp, _ in task["train"]]
+    for quality, program in ranked:
+        sig = signature(program, inputs)
+        if sig in seen: continue
+        chosen.append((quality, program))
+        seen.add(sig)
+        if len(chosen) == keep: break
+    return chosen
 
 def parents_of(program):
     return [] if isinstance(program, str) else [show(program[1]), show(program[2])]
@@ -138,7 +166,7 @@ def evolve(library, improved, inputs, cap=12):
         if sig in base_sigs:
             primitive_equivalent_rejections += 1
             continue
-        if item["support"] > 1 and sig not in seen and name not in library:
+        if item["support"] > 1 and item["gain"] / item["support"] >= 0.8 and sig not in seen and name not in library:
             library[name] = {
                 "program": item["program"],
                 "gain": item["gain"],
@@ -154,7 +182,8 @@ def evolve(library, improved, inputs, cap=12):
         elif name in library:
             library[name]["gain"] += item["gain"]
             library[name]["support"] += item["support"]
-    keep = sorted(library.values(), key=lambda e: (-e["reuse"], -e["support"], -e["gain"], e["age"], size(e["program"]), show(e["program"])))[:cap]
+    alive = [e for e in library.values() if e["reuse"] > 0 or e["age"] == 0]
+    keep = sorted(alive, key=lambda e: (-e["reuse"], -e["support"], -e["gain"], e["age"], size(e["program"]), show(e["program"])))[:cap]
     library = {show(e["program"]): e for e in keep}
     return library, new[:cap], ranked[:5], primitive_equivalent_rejections
 
@@ -175,6 +204,16 @@ def evaluate(label, tasks, library):
         exact += s == 1.0
         mean += s
     print(f"{label}: {int(exact)}/{len(tasks)} exact, mean test {mean / len(tasks):.3f}")
+
+def ablate(tasks, fronts):
+    pool = spawn({}, {})
+    breaks = gap = 0.0
+    for task_id, task in tasks.items():
+        base = frontier(task, pool, keep=1)[0][0]
+        best = fronts[task_id][0][0]
+        breaks += best == 1.0 and base < 1.0
+        gap += best - base
+    return int(breaks), gap / len(tasks)
 
 def learn(label, tasks, eval_tasks=None, rounds=3, keep=4, library=None):
     library, fronts, inputs, solved_before = ({} if library is None else dict(library)), {}, sample_inputs(tasks), set()
@@ -198,12 +237,13 @@ def learn(label, tasks, eval_tasks=None, rounds=3, keep=4, library=None):
         survivors = len(prior & set(library))
         avg_reuse = sum(entry["reuse"] for entry in library.values()) / len(library) if library else 0.0
         depths = [entry["depth"] for entry in library.values()]
+        ablation_breaks, ablation_gap = ablate(tasks, fronts)
         print(f"{label} round {r}: {len(solved)}/{len(tasks)} solved, mean train {mean:.3f}, pool {len(pool)}")
         print("newly solved:", fresh[:12], "..." if len(fresh) > 12 else "")
         print("new abstractions:", [f"{show(item['program'])} s{item['support']} g{item['gain']:.2f}" for item in new])
         print("reused abstractions:", reused[:8])
         print("top candidates:", [f"{show(item['program'])} s{item['support']} g{item['gain']:.2f}" for item in top])
-        print(f"metrics: library_solves={solve_reuse} avg_library_delta={sum(gain_reuse) / len(gain_reuse) if gain_reuse else 0:.3f} survivors={survivors} avg_reuse={avg_reuse:.2f} pool_per_solve={len(pool) / max(1, len(solved)):.1f} lineage_depth_max={max(depths, default=0)} lineage_depth_avg={(sum(depths) / len(depths)) if depths else 0:.2f} new_population_count={len(new)} primitive_equivalent_rejections={primitive_equivalent_rejections}")
+        print(f"metrics: library_solves={solve_reuse} avg_library_delta={sum(gain_reuse) / len(gain_reuse) if gain_reuse else 0:.3f} survivors={survivors} avg_reuse={avg_reuse:.2f} pool_per_solve={len(pool) / max(1, len(solved)):.1f} lineage_depth_max={max(depths, default=0)} lineage_depth_avg={(sum(depths) / len(depths)) if depths else 0:.2f} new_population_count={len(new)} primitive_equivalent_rejections={primitive_equivalent_rejections} ablation_breaks={ablation_breaks} ablation_gap={ablation_gap:.3f}")
         print("population:", [name for name in library])
         if eval_tasks and r in {1, rounds}: evaluate(f"public eval after round {r}", eval_tasks, library)
     return library
